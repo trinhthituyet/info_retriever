@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>info-retriever</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1>info&#8209;retriever</h1>
+  <p class="tagline">Ask questions about your own contracts.</p>
+  <div class="meta" id="meta"></div>
+</header>
+
+<main class="layout">
+
+  <!-- ------------------------------------------------ documents -->
+  <aside class="panel documents">
+    <div class="dropzone" id="dropzone" tabindex="0" role="button"
+         aria-label="Add documents">
+      <svg viewBox="0 0 24 24" aria-hidden="true" class="dz-icon">
+        <path d="M12 16V4m0 0L8 8m4-4 4 4" fill="none" stroke="currentColor"
+              stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none"
+              stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <strong>Add documents</strong>
+      <span>Drop files here, or click to choose</span>
+      <span class="hint">PDF &middot; DOCX &middot; PNG/JPG &middot; TXT</span>
+      <input type="file" id="file-input" multiple hidden
+             accept=".pdf,.docx,.png,.jpg,.jpeg,.gif,.webp,.txt,.md">
+    </div>
+
+    <ul class="ingest-log" id="ingest-log" aria-live="polite"></ul>
+
+    <div class="section-head">
+      <h2>Indexed</h2>
+      <span class="count" id="doc-count">0</span>
+    </div>
+    <ul class="doc-list" id="doc-list"></ul>
+  </aside>
+
+  <!-- ------------------------------------------------ ask -->
+  <section class="panel ask">
+    <form id="ask-form" class="ask-form">
+      <textarea id="question" rows="2" placeholder="When does my lease end, and how much notice must I give?"
+                aria-label="Your question"></textarea>
+      <div class="ask-controls">
+        <label class="toggle">
+          <input type="checkbox" id="cite" checked>
+          <span>Verify &amp; cite<small>2nd pass &mdash; slower, gives page refs</small></span>
+        </label>
+        <button type="submit" id="ask-button">Ask</button>
+      </div>
+    </form>
+
+    <div class="examples" id="examples">
+      <button type="button">Which contracts expire in the next 6 months?</button>
+      <button type="button">What is my notice period?</button>
+      <button type="button">How much is my deposit and when is it returned?</button>
+    </div>
+
+    <div class="result" id="result" hidden>
+      <div class="activity" id="activity" aria-live="polite"></div>
+      <article class="answer" id="answer"></article>
+      <div id="citations"></div>
+      <details id="trace" hidden>
+        <summary>Agent tool calls</summary>
+        <pre id="trace-body"></pre>
+      </details>
+    </div>
+
+    <p class="disclaimer">
+      Answers come from your documents only. This is an index into your paperwork,
+      not legal advice.
+    </p>
+  </section>
+</main>
+
+<!-- ------------------------------------------------ document detail -->
+<dialog id="detail">
+  <header>
+    <h3 id="detail-title"></h3>
+    <button type="button" id="detail-close" aria-label="Close">&times;</button>
+  </header>
+  <div id="detail-body"></div>
+  <footer>
+    <a id="detail-download" href="#" download>Download original</a>
+    <button type="button" id="detail-delete" class="danger">Delete from index</button>
+  </footer>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
