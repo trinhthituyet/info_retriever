@@ -99,11 +99,3 @@ def ingest_file(path: Path, *, progress: Progress = _noop) -> IngestResult:
         chunk_count=len(chunks),
         transcribed=transcribed,
     )
-
-
-def ingest_paths(paths: list[Path], *, progress: Progress = _noop) -> list[IngestResult]:
-    results: list[IngestResult] = []
-    for path in paths:
-        progress(f"--- {path.name} ---")
-        results.append(ingest_file(path, progress=progress))
-    return results

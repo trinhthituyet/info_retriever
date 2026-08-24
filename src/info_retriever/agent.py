@@ -16,7 +16,6 @@ Two passes, for a specific reason:
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -273,17 +272,3 @@ def ask(question: str, *, cite: bool = True, emit: Emit | None = None) -> Answer
     if not answer.text:
         answer.text = draft
     return answer
-
-
-def answer_as_json(question: str, *, cite: bool = True) -> str:
-    answer = ask(question, cite=cite)
-    return json.dumps(
-        {
-            "answer": answer.text,
-            "citations": answer.citations,
-            "documents_used": answer.documents_used,
-            "tool_calls": answer.tool_calls,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )

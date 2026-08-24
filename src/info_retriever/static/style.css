@@ -201,6 +201,21 @@ button#ask-button {
 }
 button#ask-button:disabled { opacity: .55; cursor: progress; }
 
+button.secondary {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+button.secondary:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+button.secondary:disabled { opacity: .5; cursor: progress; }
+button.secondary + button#ask-button { margin-left: 0; }
+
 .examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .examples button {
   background: var(--surface-2);

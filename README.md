@@ -50,12 +50,12 @@ searches. Ingestion extracts those fields into a per-document-type schema
 
 ```bash
 uv venv --python 3.12
-uv pip install -e '.[web]'   # drop [web] for CLI only
+uv pip install -e .
 cp .env.example .env         # then put your ANTHROPIC_API_KEY in it
-docs init
+info-retriever               # http://127.0.0.1:8000
 ```
 
-The first `docs add` downloads the embedding model (~2.2 GB for the default
+The first upload downloads the embedding model (~2.2 GB for the default
 `BAAI/bge-m3`) and caches it in `~/.cache/huggingface`. To trade quality for
 speed and disk, set in `.env`:
 
@@ -69,11 +69,11 @@ EMBED_PASSAGE_PREFIX=passage:•
 Changing the model means changing `EMBED_DIM`, and the vector table's dimension is
 fixed at creation — delete `data/documents.db` and re-ingest.
 
-## Web interface
+## Using it
 
 ```bash
-docs serve                   # http://127.0.0.1:8000
-docs serve --port 3000 --reload
+info-retriever                       # 127.0.0.1:8000
+info-retriever --port 3000 --reload
 ```
 
 Drop files on the left to ingest; ask on the right. Both are slow operations
@@ -81,6 +81,14 @@ Drop files on the left to ingest; ask on the right. Both are slow operations
 hanging on a spinner: you see each ingest stage per file, and each tool the agent
 calls, then the cited answer streams in token by token. Click any document to see
 its extracted fields, download the original, or remove it from the index.
+
+**Verify & cite** (on by default) runs the second Claude pass, which re-answers from
+the original documents and returns page references. Turning it off roughly halves
+cost and latency but gives no provenance.
+
+**Inspect retrieval** runs the hybrid search alone, with no model in the loop, and
+shows the ranked passages. This is the first thing to try when an answer looks
+wrong — it separates a retrieval problem from a reasoning problem.
 
 The frontend is one HTML file plus vanilla JS and CSS served by FastAPI — no npm,
 no build step, no bundler. Everything document- or model-derived is written with
@@ -107,28 +115,13 @@ network — the whole corpus is readable by anyone who can reach the port.
 Interactive docs at `/api/docs`. Ingestion is serialised behind a lock — SQLite
 tolerates one writer, and the embedding model is not worth loading twice.
 
-## CLI
+The API is plain JSON and SSE with no auth, so `curl` works for scripting:
 
 ```bash
-docs add ~/Documents/lease.pdf              # one file
-docs add ~/Documents/contracts/             # a whole directory, recursively
-docs list                                   # what's indexed
-docs show 3f2a                              # extracted fields for one document
-
-docs ask "When does my lease end and how much notice do I need to give?"
-docs ask "Which of my contracts expire in the next 6 months?"
-docs ask "Does my insurance cover water damage?"
-
-docs ask "notice period" --no-cite          # skip the citation pass: ~half the cost
-docs ask "rent amount" --show-tools         # see which tools the agent chose
-docs ask "deductible" --json                # machine-readable output
-
-docs search "termination notice"            # raw hybrid retrieval, no LLM
-docs delete 3f2a
+curl -N 'http://127.0.0.1:8000/api/ask?q=What+is+my+notice+period%3F&cite=false'
+curl 'http://127.0.0.1:8000/api/search?q=termination+notice&limit=5'
+curl -F files=@lease.pdf http://127.0.0.1:8000/api/uploads
 ```
-
-`docs search` is the fastest way to check whether a bad answer is a *retrieval*
-problem or a *reasoning* problem. Check it first when an answer looks wrong.
 
 ## Layout
 
@@ -144,8 +137,7 @@ problem or a *reasoning* problem. Check it first when an answer looks wrong.
 | `retrieval.py` | Hybrid search with Reciprocal Rank Fusion. |
 | `tools.py` | The three agent tools. |
 | `agent.py` | Agentic pass + citation pass. |
-| `cli.py` | Typer CLI. |
-| `web.py` | FastAPI routes, SSE streaming, ingest job runner. |
+| `web.py` | FastAPI routes, SSE streaming, ingest job runner, entry point. |
 | `static/` | The frontend: `index.html`, `app.js`, `style.css`. |
 
 ## Notes and known limits

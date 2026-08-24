@@ -215,8 +215,28 @@ def test_search_returns_hybrid_hits(client):
     _upload(client, "lease.txt", LEASE)
     body = client.get("/api/search", params={"q": "terminate notice", "limit": 3}).json()
     assert body["hit_count"] >= 1
-    assert body["hits"][0]["document_title"] == "Lease — 12 Rose St"
+    hit = body["hits"][0]
+    assert hit["document_title"] == "Lease — 12 Rose St"
+    # The UI's "Inspect retrieval" view renders these fields directly.
+    assert {"content", "page", "heading", "score"} <= hit.keys()
     assert client.get("/api/search", params={"q": "  "}).status_code == 400
+
+
+def test_there_is_no_cli(client):
+    """The CLI was removed; the web app is the only entry point. Nothing may
+    re-introduce an import of it, or of a CLI framework."""
+    import importlib
+
+    import info_retriever
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("info_retriever.cli")
+
+    package_dir = Path(info_retriever.__file__).parent
+    for source in package_dir.glob("*.py"):
+        body = source.read_text()
+        assert "import typer" not in body, f"{source.name} imports typer"
+        assert "from rich" not in body and "import rich" not in body, f"{source.name} imports rich"
 
 
 def test_ask_streams_stage_tool_delta_then_answer(client):

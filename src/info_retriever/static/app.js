@@ -436,6 +436,64 @@ $("ask-form").addEventListener("submit", (event) => {
   askQuestion(question, $("cite").checked);
 });
 
+/* Raw hybrid retrieval, no model in the loop. This is the first diagnostic when
+   an answer looks wrong: it separates a retrieval problem from a reasoning one. */
+async function inspectRetrieval(query) {
+  if (currentSource) {
+    currentSource.close();
+    currentSource = null;
+  }
+
+  $("result").hidden = false;
+  clear(activity);
+  clear(citationsBox);
+  answerBox.textContent = "";
+  answerBox.classList.remove("streaming");
+  trace.hidden = true;
+
+  const button = $("inspect-button");
+  button.disabled = true;
+  addStep("Retrieving (no model)");
+
+  try {
+    const body = await api(`/api/search?${new URLSearchParams({ q: query, limit: "8" })}`);
+    finishSteps();
+
+    if (body.hit_count === 0) {
+      citationsBox.append(el("div", "error-box", "No passages matched. Nothing would reach the model."));
+      return;
+    }
+
+    const wrap = el("div", "citations");
+    wrap.append(el("h3", null, `Retrieved passages (${body.hit_count}) — ranked, no model`));
+    body.hits.forEach((hit) => {
+      const box = el("div", "citation");
+      const where = [
+        hit.document_title,
+        hit.page ? `page ${hit.page}` : null,
+        hit.heading,
+        `rrf ${hit.score}`,
+      ].filter(Boolean).join(" · ");
+      box.append(el("div", "src", where));
+      const quote = el("blockquote");
+      quote.textContent = hit.content;
+      box.append(quote);
+      wrap.append(box);
+    });
+    citationsBox.append(wrap);
+  } catch (err) {
+    finishSteps();
+    citationsBox.append(el("div", "error-box", err.message));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("inspect-button").addEventListener("click", () => {
+  const query = $("question").value.trim();
+  if (query) inspectRetrieval(query);
+});
+
 $("question").addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
     $("ask-form").requestSubmit();
