@@ -23,7 +23,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db
+from . import auth, db
 from .config import settings
 from .loaders import UnsupportedFile
 
@@ -31,6 +31,30 @@ STATIC_DIR = Path(__file__).parent / "static"
 _HEARTBEAT_SECONDS = 15.0
 
 _ingest_lock = threading.Lock()
+
+
+def _describe_failure(exc: BaseException) -> str:
+    """Turn an exception into something a user can act on.
+
+    Authentication failures get special handling: the cached credential is dropped
+    so the next attempt re-authenticates, and the message says to retry rather than
+    leaving a bare 401 on screen.
+    """
+    import anthropic
+
+    from .extract import reset_client
+
+    if isinstance(exc, auth.AuthError):
+        return str(exc)
+    if isinstance(exc, anthropic.AuthenticationError):
+        reset_client()
+        return (
+            "The gateway rejected our credential. It has been discarded — retry, "
+            "and if it fails again re-authenticate with AppleConnect."
+        )
+    if isinstance(exc, anthropic.APIConnectionError):
+        return f"Could not reach {settings().base_url or 'the Claude API'}: {exc}"
+    return f"{type(exc).__name__}: {exc}"
 
 
 # --------------------------------------------------------------------------- #
@@ -113,7 +137,7 @@ def _run_ingest(job: IngestJob) -> None:
                 continue
             except Exception as exc:  # noqa: BLE001 - one bad file must not abort the batch
                 failed += 1
-                put(("file_failed", {"name": path.name, "reason": str(exc)}))
+                put(("file_failed", {"name": path.name, "reason": _describe_failure(exc)}))
                 continue
 
             if result.skipped_duplicate_of:
@@ -174,6 +198,8 @@ def create_app() -> FastAPI:
             "agent_model": cfg.agent_model,
             "extract_model": cfg.extract_model,
             "embed_model": cfg.embed_model,
+            # Non-secret: which gateway and auth mode are in play. Never the token.
+            **auth.describe(),
         }
 
     @app.get("/api/documents")
@@ -300,7 +326,7 @@ def create_app() -> FastAPI:
                 # Named "failure", not "error": EventSource dispatches a server-sent
                 # `event: error` to the same handler as a transport failure, so a
                 # distinct name keeps the two unambiguous on the client.
-                queue.put(("failure", {"message": f"{type(exc).__name__}: {exc}"}))
+                queue.put(("failure", {"message": _describe_failure(exc)}))
             finally:
                 queue.put(_DONE)
 

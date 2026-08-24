@@ -2,21 +2,57 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
+import threading
 from typing import Any
 
 import anthropic
 
+from . import auth
 from .config import settings
 from .loaders import PAGE_MARKER, LoadedFile
 from .schemas import BaseContract, Classification, extraction_model_for
 
+_client_lock = threading.Lock()
+_client: anthropic.Anthropic | None = None
+_client_token: str | None = None
 
-@lru_cache(maxsize=1)
+
 def client() -> anthropic.Anthropic:
-    # Zero-arg constructor resolves ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or
-    # an `ant auth login` profile — in that order.
-    return anthropic.Anthropic()
+    """A client authenticated for the configured gateway.
+
+    The SDK takes ``auth_token`` as a fixed string at construction, and an
+    appleconnect token is short-lived relative to how long this server runs, so the
+    client is rebuilt whenever the token rotates. Every call site calls this
+    function fresh, which is what makes the rotation invisible to them.
+    """
+    global _client, _client_token
+
+    cfg = settings()
+
+    if cfg.auth_mode == "default":
+        with _client_lock:
+            if _client is None:
+                # Resolves ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an
+                # `ant auth login` profile — in that order.
+                _client = anthropic.Anthropic(base_url=cfg.base_url)
+            return _client
+
+    token = auth.auth_token()
+    with _client_lock:
+        if _client is None or _client_token != token:
+            _client = anthropic.Anthropic(auth_token=token, base_url=cfg.base_url)
+            _client_token = token
+        return _client
+
+
+def reset_client() -> None:
+    """Drop the cached client and token so the next call re-authenticates."""
+    global _client, _client_token
+
+    with _client_lock:
+        _client = None
+        _client_token = None
+    auth.invalidate()
 
 
 class ExtractionRefused(Exception):

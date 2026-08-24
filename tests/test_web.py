@@ -49,6 +49,9 @@ def _sse_events(text: str) -> list[tuple[str, dict]]:
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("EMBED_DIM", "4")
+    # Every Claude call is stubbed below, so no credential is needed — but pin the
+    # mode so a machine without appleconnect never reaches it.
+    monkeypatch.setenv("ANTHROPIC_AUTH_MODE", "default")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-used")
 
     from info_retriever import agent, db, embed, extract, retrieval, web
