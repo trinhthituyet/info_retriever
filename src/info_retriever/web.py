@@ -40,12 +40,17 @@ def _describe_failure(exc: BaseException) -> str:
     so the next attempt re-authenticates, and the message says to retry rather than
     leaving a bare 401 on screen.
     """
-    import anthropic
-
+    from . import llm
     from .extract import reset_client
 
     if isinstance(exc, auth.AuthError):
         return str(exc)
+    if isinstance(exc, llm.ProviderError):
+        return str(exc)
+
+    # Imported lazily: the OpenAI SDK is only loaded on the vllm path.
+    import anthropic
+
     if isinstance(exc, anthropic.AuthenticationError):
         reset_client()
         return (
@@ -191,15 +196,17 @@ def create_app() -> FastAPI:
 
     @app.get("/api/stats")
     def stats() -> dict[str, Any]:
+        from . import llm
+
         cfg = settings()
         return {
             **db.stats(),
             "today": db.today(),
-            "agent_model": cfg.agent_model,
-            "extract_model": cfg.extract_model,
+            "model": cfg.active_model,
+            "extract_model": cfg.extract_model if cfg.is_anthropic else cfg.vllm_model,
             "embed_model": cfg.embed_model,
-            # Non-secret: which gateway and auth mode are in play. Never the token.
-            **auth.describe(),
+            # Non-secret: which provider and gateway are in play. Never a credential.
+            **llm.provider().describe(),
         }
 
     @app.get("/api/documents")

@@ -14,13 +14,21 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",
+    "apple-certifi>=3.0.2",
+    "openai>=1.40",
 ]
 
 [project.optional-dependencies]
+# Rasterising scanned PDFs for a vLLM-served model. Not needed with
+# LLM_PROVIDER=anthropic, which reads PDFs natively.
+vllm = ["pymupdf>=1.24"]
 dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [project.scripts]
 info-retriever = "info_retriever.web:main"
+
+[[tool.uv.index]]
+url = "https://pypi.apple.com/simple/"
 
 [build-system]
 requires = ["hatchling"]

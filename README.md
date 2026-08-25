@@ -46,6 +46,62 @@ policies renew this quarter" are SQL queries over typed fields, not vector
 searches. Ingestion extracts those fields into a per-document-type schema
 (`schemas.py`), and `query_documents` filters them directly.
 
+## Choosing a model
+
+`LLM_PROVIDER` in `.env` selects the backend. Both share the same pipeline, prompts,
+tools and storage — only the wire format differs.
+
+| | `anthropic` | `vllm` |
+|---|---|---|
+| Model | Claude via Apple's Floodgate gateway | Anything vLLM serves, locally |
+| Auth | appleconnect OAuth, auto-refreshed | none (or `--api-key`) |
+| Scanned PDFs | read natively | pages rasterised, needs a vision model |
+| Structured extraction | structured outputs | guided JSON decoding |
+| Tool calling | beta tool runner | manual loop, needs server flags |
+| Citations | native spans | quotes located in source text |
+| Data leaves the machine | yes, to Floodgate | no |
+
+```bash
+# .env — Claude through Floodgate (default)
+LLM_PROVIDER=anthropic
+ANTHROPIC_AUTH_MODE=appleconnect
+```
+
+```bash
+# .env — local model
+LLM_PROVIDER=vllm
+VLLM_BASE_URL=http://127.0.0.1:8001/v1
+VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
+```
+
+The active provider and model are shown in the header and returned by `/api/stats`,
+so you can always tell which one answered.
+
+### Running vLLM
+
+Tool calling is not on by default, and the agent is useless without it:
+
+```bash
+vllm serve Qwen/Qwen2.5-VL-7B-Instruct --port 8001 \
+  --enable-auto-tool-choice --tool-call-parser hermes
+```
+
+Pick a **vision-capable** model if you have scanned PDFs or photos — transcription
+sends images. For rasterising PDF pages, install the extra: `uv pip install -e '.[vllm]'`.
+
+### What degrades on vLLM, honestly
+
+- **Citations are reconstructed, not native.** The model is asked for the verbatim
+  quotes it relied on, and those are located in the stored text; because ingested
+  text carries `@@PAGE:N@@` markers, that still yields real page numbers. A quote
+  that cannot be found is shown with `located: false` rather than dropped or given a
+  guessed page — usually a sign the model paraphrased instead of quoting.
+- **Small models fail structured extraction.** Guided decoding constrains the shape,
+  not the content. Under roughly 7B, expect fields to be plausible but wrong; the
+  provider raises a clear error when output does not validate.
+- **No prompt caching.** The document catalogue is re-sent every turn at full cost.
+  On Anthropic it sits behind a cache breakpoint at ~0.1× after the first call.
+
 ## Setup
 
 ```bash
@@ -135,8 +191,10 @@ curl -F files=@lease.pdf http://127.0.0.1:8000/api/uploads
 | `extract.py` | Claude calls: transcribe, classify, extract fields. |
 | `ingest.py` | Orchestrates the add pipeline. |
 | `retrieval.py` | Hybrid search with Reciprocal Rank Fusion. |
-| `tools.py` | The three agent tools. |
-| `agent.py` | Agentic pass + citation pass. |
+| `tools.py` | The three agent tools — one registry, both providers. |
+| `agent.py` | Two-pass orchestration; no provider-specific code. |
+| `llm/` | `base.py` (interface), `prompts.py` (shared), `anthropic_provider.py`, `vllm_provider.py`, `citations.py` (quote locating). |
+| `auth.py` | appleconnect token minting and refresh. |
 | `web.py` | FastAPI routes, SSE streaming, ingest job runner, entry point. |
 | `static/` | The frontend: `index.html`, `app.js`, `style.css`. |
 

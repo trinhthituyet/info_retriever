@@ -152,11 +152,17 @@ def test_index_and_static_assets_are_served(client):
         assert client.get(asset).status_code == 200, asset
 
 
-def test_stats_on_an_empty_index(client):
+def test_stats_reports_the_active_provider(client):
     body = client.get("/api/stats").json()
     assert body["documents"] == 0
     assert body["chunks"] == 0
-    assert body["agent_model"]
+    # The UI renders these; renaming either without updating app.js shows "undefined".
+    assert body["llm_provider"] == "anthropic"
+    assert body["model"]
+    assert body["native_citations"] is True
+    # A credential must never reach this endpoint.
+    assert "token" not in str(body).lower() or body.get("token_cached") is not None
+    assert "auth_token" not in body
 
 
 def test_upload_streams_progress_then_indexes(client):

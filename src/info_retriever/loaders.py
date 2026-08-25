@@ -163,3 +163,34 @@ def load(path: Path) -> LoadedFile:
 
     supported = sorted({".pdf", ".docx", *_IMAGE_MEDIA_TYPES, *_TEXT_SUFFIXES})
     raise UnsupportedFile(f"Unsupported file type '{suffix}'. Supported: {', '.join(supported)}")
+
+
+def as_image_parts(loaded: LoadedFile, *, dpi: int = 150) -> list[tuple[str, str]]:
+    """``[(media_type, base64), ...]`` — one entry per page.
+
+    Only Anthropic reads a PDF natively; every other backend needs pixels, so PDF
+    pages are rasterised here. Images pass straight through. Provider-neutral by
+    design: the choice of who needs this belongs to the provider, the mechanics
+    belong here.
+    """
+    if loaded.mime_type in set(_IMAGE_MEDIA_TYPES.values()):
+        return [(loaded.mime_type, _b64(loaded.path))]
+
+    if loaded.mime_type != "application/pdf":
+        raise UnsupportedFile(f"Cannot render {loaded.mime_type} as images.")
+
+    try:
+        import pymupdf
+    except ModuleNotFoundError as exc:
+        raise UnsupportedFile(
+            f"{loaded.path.name} is a scanned PDF with no text layer, and rendering "
+            "its pages needs PyMuPDF. Install it with `uv pip install pymupdf`, or set "
+            "LLM_PROVIDER=anthropic — Claude reads PDFs directly and needs no renderer."
+        ) from exc
+
+    parts: list[tuple[str, str]] = []
+    with pymupdf.open(loaded.path) as document:
+        for page in document:
+            pixmap = page.get_pixmap(dpi=dpi)
+            parts.append(("image/png", base64.standard_b64encode(pixmap.tobytes("png")).decode()))
+    return parts

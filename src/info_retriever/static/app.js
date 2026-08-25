@@ -35,8 +35,11 @@ async function api(path, options) {
 async function loadStats() {
   try {
     const stats = await api("/api/stats");
+    // Show which backend is answering: with two providers configured, "why is this
+    // answer different today" is usually "a different model served it".
+    const backend = stats.llm_provider === "vllm" ? `vllm · ${stats.model}` : stats.model;
     $("meta").textContent =
-      `${stats.documents} docs · ${stats.chunks} chunks · ${stats.agent_model}`;
+      `${stats.documents} docs · ${stats.chunks} chunks · ${backend}`;
     $("doc-count").textContent = stats.documents;
   } catch (err) {
     $("meta").textContent = "backend unreachable";
