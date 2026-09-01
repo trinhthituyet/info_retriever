@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 from ..loaders import LoadedFile
-from ..schemas import BaseContract, Classification
+from ..schemas import BaseContract, Classification, QueryPlan
 
 #: ``emit(kind, payload)`` — progress channel. Kinds: ``stage``, ``tool``,
 #: ``delta`` (streamed answer text), ``draft``.
@@ -25,6 +25,21 @@ Emit = Callable[[str, dict[str, Any]], None]
 
 def no_emit(kind: str, payload: dict[str, Any]) -> None:
     pass
+
+
+@dataclass
+class Turn:
+    """One completed exchange, as replayed into a later request.
+
+    Carries the *outcome* of a turn, never its tool transcript. A single
+    ``read_document`` result can be 60 KB, so replaying transcripts would exhaust
+    the context window within a few turns; the documents remain in the corpus and
+    the agent re-reads them when a follow-up needs them.
+    """
+
+    question: str
+    answer: str
+    sources: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -37,6 +52,35 @@ class AgentResult:
 class CitedResult:
     text: str
     citations: list[dict[str, Any]] = field(default_factory=list)
+
+
+def render_history(
+    turns: Sequence[Turn], *, max_turns: int = 12, max_chars: int = 12_000
+) -> list[tuple[str, str]]:
+    """``[(role, content), ...]`` oldest-first, trimmed to fit.
+
+    Trims from the **oldest** end: a follow-up almost always refers to the last
+    thing said, so recent turns are the ones worth keeping. Cited sources are
+    appended to each answer because that is what lets "what about that one?"
+    resolve — without them an elliptical follow-up has no referent.
+    """
+    recent = list(turns)[-max_turns:] if max_turns > 0 else []
+
+    rendered: list[tuple[str, str]] = []
+    budget = max_chars
+    for turn in reversed(recent):
+        answer = turn.answer
+        if turn.sources:
+            answer = f"{answer}\n\n[Answered from: {', '.join(turn.sources)}]"
+        cost = len(turn.question) + len(answer)
+        if rendered and budget - cost < 0:
+            break
+        budget -= cost
+        rendered.append(("assistant", answer))
+        rendered.append(("user", turn.question))
+
+    rendered.reverse()
+    return rendered
 
 
 class ProviderError(RuntimeError):
@@ -71,6 +115,13 @@ class LLMProvider(ABC):
         """Fill the per-document-type schema from the document text."""
 
     @abstractmethod
+    def plan_query(self, question: str) -> QueryPlan:
+        """Detect the question's language, render it in English, and derive search terms.
+
+        Documents are assumed to be English, so the search queries are English too.
+        """
+
+    @abstractmethod
     def run_agent(
         self,
         *,
@@ -78,6 +129,7 @@ class LLMProvider(ABC):
         instructions: str,
         catalogue: str,
         tools: Sequence[Any],
+        history: Sequence[Turn] = (),
         emit: Emit = no_emit,
     ) -> AgentResult:
         """Answer using the tools, returning the draft and the calls it made.
@@ -85,6 +137,8 @@ class LLMProvider(ABC):
         ``instructions`` and ``catalogue`` are passed separately rather than as one
         prompt because Anthropic wants them as two cacheable system blocks while an
         OpenAI-compatible server wants a single system string.
+
+        ``history`` is prior turns in this conversation, oldest first.
         """
 
     @abstractmethod
@@ -94,9 +148,19 @@ class LLMProvider(ABC):
         question: str,
         draft: str,
         documents: Sequence[Mapping[str, Any]],
+        history: Sequence[Turn] = (),
+        language: str = "en",
         emit: Emit = no_emit,
     ) -> CitedResult:
-        """Re-answer from the source documents, attaching verbatim citations."""
+        """Re-answer from the source documents, attaching verbatim citations.
+
+        ``history`` matters here too: an elliptical follow-up ("and the deposit?")
+        is uninterpretable without it.
+
+        ``language`` is the ISO 639-1 code the answer must be written in. This pass
+        produces the text the user reads, so the rule has to arrive here — a language
+        instruction given only to :meth:`run_agent` governs the draft, not the output.
+        """
 
     def describe(self) -> dict[str, Any]:
         return {"llm_provider": self.name, "native_citations": self.native_citations}

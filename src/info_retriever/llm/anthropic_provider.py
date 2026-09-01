@@ -15,9 +15,18 @@ import anthropic
 from .. import auth, loaders
 from ..config import settings
 from ..loaders import LoadedFile
-from ..schemas import BaseContract, Classification, extraction_model_for
+from ..schemas import BaseContract, Classification, QueryPlan, extraction_model_for
 from . import prompts
-from .base import AgentResult, CitedResult, Emit, LLMProvider, ModelRefused, no_emit
+from .base import (
+    AgentResult,
+    CitedResult,
+    Emit,
+    LLMProvider,
+    ModelRefused,
+    Turn,
+    no_emit,
+    render_history,
+)
 
 
 class AnthropicProvider(LLMProvider):
@@ -118,7 +127,10 @@ class AnthropicProvider(LLMProvider):
 
         return "\n".join(block.text for block in response.content if block.type == "text").strip()
 
-    def _parse(self, system: str, prompt: str, output_format: type) -> Any:
+    def _parse(self, system: str, prompt: str, output_format: type, *, effort: str | None = None) -> Any:
+        kwargs: dict[str, Any] = {}
+        if effort:
+            kwargs["output_config"] = {"effort": effort}
         response = self._check(
             self.client().messages.parse(
                 model=settings().extract_model,
@@ -126,6 +138,7 @@ class AnthropicProvider(LLMProvider):
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
                 output_format=output_format,
+                **kwargs,
             )
         )
         if response.parsed_output is None:
@@ -144,6 +157,16 @@ class AnthropicProvider(LLMProvider):
             extraction_model_for(doc_type),
         )
 
+    def plan_query(self, question: str) -> QueryPlan:
+        # Translation and keyword extraction are shallow work that sits in front of
+        # every question, so run it at low effort rather than the agent's setting.
+        return self._parse(
+            prompts.QUERY_PLAN_SYSTEM,
+            prompts.query_plan_user_prompt(question),
+            QueryPlan,
+            effort="low",
+        )
+
     # ------------------------------------------------------------------ agent --
 
     def run_agent(
@@ -153,10 +176,21 @@ class AnthropicProvider(LLMProvider):
         instructions: str,
         catalogue: str,
         tools: Sequence[Any],
+        history: Sequence[Turn] = (),
         emit: Emit = no_emit,
     ) -> AgentResult:
         cfg = settings()
         emit("stage", {"stage": "searching", "detail": "reading the document catalogue"})
+
+        messages = [
+            {"role": role, "content": content}
+            for role, content in render_history(
+                history,
+                max_turns=cfg.history_max_turns,
+                max_chars=cfg.history_max_chars,
+            )
+        ]
+        messages.append({"role": "user", "content": question})
 
         runner = self.client().beta.messages.tool_runner(
             model=cfg.agent_model,
@@ -164,12 +198,14 @@ class AnthropicProvider(LLMProvider):
             system=[
                 {"type": "text", "text": instructions},
                 # Stable content first: the catalogue changes only on ingest, so the
-                # breakpoint here caches instructions and catalogue together.
+                # breakpoint here caches instructions and catalogue together. History
+                # lives in `messages`, after the breakpoint, so it grows without
+                # invalidating the cached prefix.
                 {"type": "text", "text": catalogue, "cache_control": {"type": "ephemeral"}},
             ],
             tools=list(tools),
             output_config={"effort": cfg.agent_effort},
-            messages=[{"role": "user", "content": question}],
+            messages=messages,
         )
 
         tool_calls: list[dict[str, Any]] = []
@@ -226,6 +262,8 @@ class AnthropicProvider(LLMProvider):
         question: str,
         draft: str,
         documents: Sequence[Mapping[str, Any]],
+        history: Sequence[Turn] = (),
+        language: str = "en",
         emit: Emit = no_emit,
     ) -> CitedResult:
         from .. import db
@@ -243,22 +281,34 @@ class AnthropicProvider(LLMProvider):
         )
 
         cfg = settings()
+        # Prior turns go before the documents so an elliptical follow-up
+        # ("and the deposit?") has a referent by the time the question arrives.
+        messages: list[dict[str, Any]] = [
+            {"role": role, "content": content}
+            for role, content in render_history(
+                history,
+                max_turns=cfg.history_max_turns,
+                max_chars=cfg.history_max_chars,
+            )
+        ]
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    *blocks,
+                    {
+                        "type": "text",
+                        "text": prompts.cite_user_prompt(question, draft, db.today(), language),
+                    },
+                ],
+            }
+        )
+
         with self.client().messages.stream(
             model=cfg.agent_model,
             max_tokens=16000,
             output_config={"effort": cfg.agent_effort},
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        *blocks,
-                        {
-                            "type": "text",
-                            "text": prompts.cite_user_prompt(question, draft, db.today()),
-                        },
-                    ],
-                }
-            ],
+            messages=messages,
         ) as stream:
             for delta in stream.text_stream:
                 emit("delta", {"text": delta})

@@ -10,6 +10,12 @@
   --danger: #a3402f;
   --radius: 10px;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Body line-height, named so the paragraph gap can be derived from it. */
+  --line-height: 1.55;
+  /* Gap between consecutive answer paragraphs: two thirds of the single blank line
+     that a `\n\n` used to produce under `white-space: pre-wrap`. */
+  --answer-para-gap: calc(var(--line-height) * 0.6667em);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,7 +38,11 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  /* Split rather than the `font` shorthand so line-height comes from the variable —
+     the paragraph gap is derived from it, and two copies of 1.55 would drift. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 15px;
+  line-height: var(--line-height);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -168,11 +178,131 @@ body {
 
 /* ------------------------------------------------------------------ ask */
 
-.ask-form { display: flex; flex-direction: column; gap: 10px; }
+.panel.ask { display: flex; flex-direction: column; min-height: 60vh; }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+.conversation-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding-bottom: 12px; margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.conversation-bar select {
+  flex: 1 1 auto; min-width: 0;
+  background: var(--bg); color: inherit;
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 10px; font: inherit; font-size: 13px;
+}
+.conversation-bar button {
+  flex: none;
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
+}
+.conversation-bar button:hover { color: var(--text); border-color: var(--accent); }
+.icon-button { font-size: 17px !important; line-height: 1; padding: 4px 11px !important; }
+.icon-button:hover { color: var(--danger) !important; border-color: var(--danger) !important; }
+
+/* ----------------------------------------------------------- transcript */
+
+.transcript {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  max-height: 62vh;
+  padding: 14px 2px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  scroll-behavior: smooth;
+}
+
+.empty-state { color: var(--muted); font-size: 14px; margin: auto 0; }
+.empty-state p { margin: 0 0 12px; }
+
+.turn { display: flex; flex-direction: column; gap: 8px; }
+.turn.inspect { opacity: .92; }
+
+.bubble { border-radius: 12px; padding: 10px 14px; overflow-wrap: anywhere; }
+.bubble.question {
+  align-self: flex-end;
+  max-width: 82%;
+  background: var(--accent);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+  font-size: 14.5px;
+}
+.bubble.answer {
+  align-self: stretch;
+  background: var(--surface-2);
+  border-bottom-left-radius: 4px;
+  white-space: pre-wrap;
+  font-size: 15px;
+}
+.bubble.answer:empty { display: none; }
+.bubble.answer.muted { color: var(--muted); font-style: italic; }
+
+/* Paragraph spacing.
+   Before these were <p> elements, a paragraph break was a literal blank line under
+   `white-space: pre-wrap`, i.e. exactly one line box: 1 x line-height. That is now
+   set explicitly, at two thirds of the old gap. */
+.bubble.answer p {
+  margin: 0;
+  white-space: pre-wrap;   /* single newlines inside a paragraph still break */
+}
+.bubble.answer p + p { margin-top: var(--answer-para-gap); }
+
+/* Inline Markdown rendered by appendInline(). Bold carries real weight rather than
+   a colour change, so it reads as emphasis in both light and dark. */
+.bubble.answer strong { font-weight: 650; }
+.bubble.answer em { font-style: italic; }
+.bubble.answer code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5px 4px;
+}
+.bubble.answer.streaming::after {
+  content: "";
+  display: inline-block;
+  width: 7px; height: 1.05em;
+  margin-left: 2px;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  animation: blink 1s step-end infinite;
+}
+@keyframes blink { 50% { opacity: 0 } }
+
+.extras:empty { display: none; }
+
+.activity {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12.5px; color: var(--muted); font-family: var(--mono);
+  padding-left: 2px;
+}
+.activity:empty { display: none; }
+/* Once the answer lands the steps are history — keep them, quietly. */
+.activity.collapsed { max-height: 1.5em; overflow: hidden; opacity: .5; }
+.activity.collapsed:hover { max-height: none; opacity: .85; }
+.activity .step { display: flex; gap: 7px; align-items: baseline; }
+.activity .step.live::before { content: "\25CF"; color: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.activity .step.done::before { content: "\2713"; color: var(--accent); }
+@keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
+
+/* ------------------------------------------------------------ ask form */
+
+.ask-form {
+  display: flex; flex-direction: column; gap: 10px;
+  padding-top: 14px; margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
 textarea#question {
   width: 100%;
   resize: vertical;
-  min-height: 62px;
+  min-height: 56px;
   padding: 11px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -181,6 +311,7 @@ textarea#question {
   font: inherit;
 }
 textarea#question:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+textarea#question:disabled { opacity: .6; }
 
 .ask-controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 
@@ -189,7 +320,6 @@ textarea#question:focus { outline: 2px solid var(--accent); outline-offset: -1px
 .toggle small { display: block; color: var(--muted); font-size: 11.5px; }
 
 button#ask-button {
-  margin-left: auto;
   background: var(--accent);
   color: #fff;
   border: 0;
@@ -214,9 +344,8 @@ button.secondary {
 }
 button.secondary:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
 button.secondary:disabled { opacity: .5; cursor: progress; }
-button.secondary + button#ask-button { margin-left: 0; }
 
-.examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.examples { display: flex; flex-wrap: wrap; gap: 6px; }
 .examples button {
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -228,43 +357,58 @@ button.secondary + button#ask-button { margin-left: 0; }
 }
 .examples button:hover { color: var(--text); border-color: var(--accent); }
 
-/* --------------------------------------------------------------- result */
+/* -------------------------------------------------------------- sources */
 
-.result { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 16px; }
-
-.activity {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12.5px;
-  color: var(--muted);
-  font-family: var(--mono);
-  margin-bottom: 12px;
-}
-.activity:empty { display: none; }
-.activity .step { display: flex; gap: 7px; align-items: baseline; }
-.activity .step.live::before { content: "\25CF"; color: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
-.activity .step.done::before { content: "\2713"; color: var(--accent); }
-@keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
-
-.answer { font-size: 15px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.answer:empty { display: none; }
-.answer.streaming::after {
-  content: "";
-  display: inline-block;
-  width: 7px; height: 1.05em;
-  margin-left: 2px;
-  background: var(--accent);
-  vertical-align: text-bottom;
-  animation: blink 1s step-end infinite;
-}
-@keyframes blink { 50% { opacity: 0 } }
-
-.citations { margin-top: 18px; }
+.citations { margin-top: 4px; }
+/* The Inspect-retrieval panel still uses a plain div + h3 — it is a diagnostic and
+   is meant to be open. Only answer sources collapse. */
 .citations h3 {
   font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em;
   color: var(--muted); margin: 0 0 8px;
 }
+
+/* One disclosure treatment for sources and the tool trace, with a chevron instead of
+   the native triangle (which differs per browser and looks unstyled here). */
+details.citations > summary,
+details.trace > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  list-style: none;
+  padding: 3px 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  user-select: none;
+}
+details.citations > summary::-webkit-details-marker,
+details.trace > summary::-webkit-details-marker { display: none; }
+
+details.citations > summary::before,
+details.trace > summary::before {
+  content: "";
+  flex: none;
+  width: 0; height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform .15s ease;
+}
+details.citations[open] > summary::before,
+details.trace[open] > summary::before { transform: rotate(90deg); }
+
+details.citations > summary:hover,
+details.trace > summary:hover { color: var(--text); }
+details.citations > summary:focus-visible,
+details.trace > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Auto-opened because a quote could not be located — flag it in the summary too. */
+details.citations > summary.warn { color: var(--danger); text-transform: none; letter-spacing: 0; }
+
+details.citations > .citation:first-of-type { margin-top: 8px; }
+
 .citation {
   border-left: 3px solid var(--accent);
   background: var(--surface-2);
@@ -272,8 +416,12 @@ button.secondary + button#ask-button { margin-left: 0; }
   padding: 8px 12px;
   margin-bottom: 8px;
 }
+/* A quote the backend could not find in the source: usually the model
+   paraphrased instead of quoting. Shown, not hidden. */
+.citation.unlocated { border-left-color: var(--danger); }
 .citation .src { font-size: 11.5px; color: var(--muted); font-family: var(--mono); margin-bottom: 3px; }
 .citation blockquote { margin: 0; font-size: 13.5px; }
+.warn-note { font-size: 11.5px; color: var(--danger); margin-top: 4px; }
 
 .error-box {
   border-left: 3px solid var(--danger);
@@ -283,18 +431,18 @@ button.secondary + button#ask-button { margin-left: 0; }
   font-size: 13.5px;
 }
 
-details#trace { margin-top: 16px; font-size: 12.5px; color: var(--muted); }
-details#trace summary { cursor: pointer; }
-details#trace pre {
+details.trace { font-size: 12.5px; color: var(--muted); }
+details.trace pre {
   font-family: var(--mono);
   font-size: 11.5px;
   background: var(--surface-2);
   padding: 10px;
   border-radius: 8px;
   overflow-x: auto;
+  margin: 6px 0 0;
 }
 
-.disclaimer { color: var(--muted); font-size: 11.5px; margin: 22px 0 0; }
+.disclaimer { color: var(--muted); font-size: 11.5px; margin: 14px 0 0; }
 
 /* --------------------------------------------------------------- dialog */
 

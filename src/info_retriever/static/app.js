@@ -17,6 +17,68 @@ function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
+/* Minimal inline Markdown. Models routinely emit **bold**, *italic* and `code`, all
+   of which render as literal punctuation in a plain-text node.
+
+   Deliberately builds DOM nodes rather than an HTML string: answer text is
+   model-derived and quotes documents we did not author, so innerHTML would be an
+   injection path. Only these three inline forms are supported — block constructs
+   (headings, tables, links) are left as literal text rather than half-parsed.
+
+   Bold is matched before italic so `**x**` cannot be read as an empty italic, and
+   each edge must be a non-space, non-delimiter character — so arithmetic like
+   `2 * 3 * 4` and separators like `****` are left alone. */
+const INLINE_MARKDOWN =
+  /\*\*([^\s*](?:[^*]*[^\s*])?)\*\*|__([^\s_](?:[^_]*[^\s_])?)__|`([^`\n]+)`|\*([^\s*](?:[^*\n]*[^\s*])?)\*/g;
+
+function appendInline(target, text) {
+  INLINE_MARKDOWN.lastIndex = 0;
+  let last = 0;
+  let match;
+
+  while ((match = INLINE_MARKDOWN.exec(text)) !== null) {
+    if (match.index > last) {
+      target.append(document.createTextNode(text.slice(last, match.index)));
+    }
+    const [, bold, boldUnderscore, code, italic] = match;
+    if (bold !== undefined || boldUnderscore !== undefined) {
+      target.append(el("strong", null, bold ?? boldUnderscore));
+    } else if (code !== undefined) {
+      target.append(el("code", null, code));
+    } else {
+      target.append(el("em", null, italic));
+    }
+    last = INLINE_MARKDOWN.lastIndex;
+  }
+  if (last < text.length) target.append(document.createTextNode(text.slice(last)));
+}
+
+/** Replace a node's contents with `text`, rendering inline Markdown.
+ *
+ * Blank lines become real <p> elements rather than staying literal newlines under
+ * `white-space: pre-wrap`. A newline cannot be styled, so paragraph spacing is only
+ * adjustable once the breaks are elements — see `--answer-para-gap`. Single newlines
+ * stay as newlines, since each paragraph keeps `pre-wrap`.
+ */
+function setRichText(node, text) {
+  clear(node);
+
+  const body = String(text ?? "");
+  const paragraphs = body.split(/\n{2,}/).map((part) => part.replace(/^\n+|\n+$/g, ""));
+
+  let appended = 0;
+  paragraphs.forEach((paragraph) => {
+    if (!paragraph.trim()) return;
+    const block = el("p");
+    appendInline(block, paragraph);
+    node.append(block);
+    appended += 1;
+  });
+
+  // Whitespace-only body: keep whatever was there rather than emitting nothing.
+  if (appended === 0 && body) appendInline(node, body);
+}
+
 async function api(path, options) {
   const response = await fetch(path, options);
   if (!response.ok) {
@@ -283,87 +345,301 @@ async function upload(files) {
   };
 }
 
-/* --------------------------------------------------------------------- ask */
+
+/* ------------------------------------------------------------ conversation */
 
 const STAGE_LABELS = {
+  planning: "Reading the question",
   searching: "Searching your documents",
   citing: "Verifying against the originals",
 };
 
-const activity = $("activity");
-const answerBox = $("answer");
-const citationsBox = $("citations");
-const trace = $("trace");
+/* Stages whose `detail` carries the information, not just colour. For `planning` the
+   detail is the whole point — it says which language the question was translated from
+   and what terms are actually being searched. The other stages' details restate their
+   label, so appending them would only add noise. */
+const STAGES_WITH_DETAIL = new Set(["planning"]);
+
+const transcript = $("transcript");
+const emptyState = $("empty-state");
+const picker = $("conversation-picker");
+let conversationId = null;
 let currentSource = null;
 
 function setBusy(busy) {
   $("ask-button").disabled = busy;
   $("ask-button").textContent = busy ? "Working…" : "Ask";
+  $("question").disabled = busy;
 }
 
-function addStep(text) {
-  activity.querySelectorAll(".step.live").forEach((node) => {
-    node.classList.replace("live", "done");
-  });
-  const step = el("div", "step live", text);
-  activity.append(step);
-  return step;
+function showEmptyState(show) {
+  emptyState.hidden = !show;
 }
 
-function finishSteps() {
-  activity.querySelectorAll(".step.live").forEach((node) => {
-    node.classList.replace("live", "done");
-  });
+function scrollToEnd() {
+  transcript.scrollTop = transcript.scrollHeight;
 }
 
-function renderCitations(citations) {
-  clear(citationsBox);
-  if (!citations || citations.length === 0) return;
+/* --- rendering one exchange ------------------------------------------------ */
 
-  const wrap = el("div", "citations");
-  wrap.append(el("h3", null, `Sources (${citations.length})`));
+function addQuestion(text) {
+  showEmptyState(false);
+  const turn = el("div", "turn");
+  turn.append(el("div", "bubble question", text));
+  transcript.append(turn);
+  scrollToEnd();
+  return turn;
+}
+
+function citationsBlock(citations) {
+  if (!citations || citations.length === 0) return null;
+
+  // A <details> rather than a styled div: the disclosure arrow, keyboard operation
+  // and screen-reader semantics all come for free.
+  const wrap = el("details", "citations");
+  const unlocated = citations.filter((citation) => citation.located === false).length;
+
+  // Collapsed by default to keep the transcript readable — except when a quote could
+  // not be found in the source, which usually means the model paraphrased instead of
+  // quoting. That is worth seeing without a click.
+  if (unlocated > 0) wrap.open = true;
+
+  const label = unlocated
+    ? `Sources (${citations.length}) — ${unlocated} not found in source`
+    : `Sources (${citations.length})`;
+  const summary = el("summary", null, label);
+  if (unlocated) summary.classList.add("warn");
+  wrap.append(summary);
 
   citations.forEach((citation) => {
-    const box = el("div", "citation");
+    const box = el("div", citation.located === false ? "citation unlocated" : "citation");
     const where =
       citation.page !== undefined
         ? `page ${citation.page}`
         : citation.char_start !== undefined
         ? `offset ${citation.char_start}`
         : "";
-    box.append(
-      el("div", "src", [citation.document_title || "document", where].filter(Boolean).join(" · "))
-    );
+    const source = [citation.document_title || "document", where].filter(Boolean).join(" · ");
+    box.append(el("div", "src", source));
     const quote = el("blockquote");
     quote.textContent = citation.cited_text || "";
     box.append(quote);
+    if (citation.located === false) {
+      box.append(el("div", "warn-note", "could not be found in the source text"));
+    }
     wrap.append(box);
   });
-
-  citationsBox.append(wrap);
+  return wrap;
 }
+
+function toolTrace(toolCalls) {
+  if (!toolCalls || toolCalls.length === 0) return null;
+  const details = el("details", "trace");
+  details.append(el("summary", null, `Agent tool calls (${toolCalls.length})`));
+  const pre = el("pre");
+  pre.textContent = toolCalls
+    .map((call) => `${call.name}(${JSON.stringify(call.input)})`)
+    .join("\n");
+  details.append(pre);
+  return details;
+}
+
+/** Render a completed exchange into `container`.
+ *
+ * Takes an explicit view model rather than a raw API turn: a stored turn calls the
+ * body `answer` while a live SSE payload calls it `text`, and reading the wrong one
+ * yields an empty bubble that CSS then hides — a silently blank transcript.
+ */
+function renderAnswer(container, { text, citations, toolCalls }) {
+  clear(container);
+
+  const body = (text ?? "").trim();
+  if (body) {
+    const bubble = el("div", "bubble answer");
+    setRichText(bubble, body);
+    container.append(bubble);
+  } else {
+    // Never render nothing: an empty bubble is invisible, so a missing answer
+    // would look like a rendering failure rather than a recorded gap.
+    container.append(el("div", "bubble answer muted", "(no answer recorded for this turn)"));
+  }
+
+  const sources = citationsBlock(citations);
+  if (sources) container.append(sources);
+  const trace = toolTrace(toolCalls);
+  if (trace) container.append(trace);
+}
+
+/* --- conversation list ----------------------------------------------------- */
+
+async function loadConversationList() {
+  try {
+    const conversations = await api("/api/conversations");
+    clear(picker);
+
+    // Always first: selecting it means "start fresh". Nothing is created on the
+    // server until a question is actually asked, so refreshing repeatedly does not
+    // accumulate empty conversations.
+    const placeholder = el("option", null, "New conversation");
+    placeholder.value = "";
+    picker.append(placeholder);
+
+    conversations.forEach((conversation) => {
+      const label = conversation.title || "Untitled";
+      const option = el("option", null, `${label}  (${conversation.turn_count})`);
+      option.value = conversation.id;
+      picker.append(option);
+    });
+
+    // Keep the control showing the conversation we are actually in, or it would
+    // advertise one we never opened.
+    picker.value = conversationId || "";
+    updateDeleteState();
+    return conversations;
+  } catch (err) {
+    /* the picker is a convenience; asking still works without it */
+    return [];
+  }
+}
+
+/** Deleting only makes sense for a conversation that exists on the server. */
+function updateDeleteState() {
+  $("delete-conversation").disabled = !conversationId;
+}
+
+async function openConversation(id) {
+  clear(transcript);
+  transcript.append(emptyState);
+  conversationId = id || null;
+  updateDeleteState();
+
+  if (!id) {
+    showEmptyState(true);
+    return;
+  }
+
+  try {
+    const detail = await api(`/api/conversations/${id}`);
+    showEmptyState(detail.turns.length === 0);
+    detail.turns.forEach((turn) => {
+      addQuestion(turn.question);
+      const answerTurn = el("div", "turn");
+      // Map the stored turn onto the view model explicitly — `answer` here,
+      // `text` on the live SSE payload.
+      renderAnswer(answerTurn, {
+        text: turn.answer,
+        citations: turn.citations,
+        toolCalls: turn.tool_calls,
+      });
+      transcript.append(answerTurn);
+    });
+    scrollToEnd();
+  } catch (err) {
+    showEmptyState(true);
+    transcript.append(el("div", "error-box", `Could not load conversation: ${err.message}`));
+  }
+}
+
+picker.addEventListener("change", () => {
+  if (picker.value) openConversation(picker.value);
+  else startNewConversation();
+});
+
+/** Present an empty transcript with no conversation attached.
+ *
+ * Nothing is written to the server here: the first question creates the
+ * conversation and reports its id back on the `conversation` SSE event. That keeps a
+ * refresh — or a stray click on "New" — from leaving empty rows behind.
+ */
+function startNewConversation() {
+  clear(transcript);
+  transcript.append(emptyState);
+  showEmptyState(true);
+  conversationId = null;
+  picker.value = "";
+  updateDeleteState();
+}
+
+$("new-conversation").addEventListener("click", () => {
+  startNewConversation();
+  $("question").focus();
+});
+
+$("delete-conversation").addEventListener("click", async () => {
+  if (!conversationId) return;
+  if (!window.confirm("Delete this conversation and its history?")) return;
+  try {
+    await api(`/api/conversations/${conversationId}`, { method: "DELETE" });
+  } catch (err) {
+    window.alert(`Delete failed: ${err.message}`);
+    return;
+  }
+  startNewConversation();
+  await loadConversationList();
+});
+
+/* --- asking ---------------------------------------------------------------- */
 
 function askQuestion(question, cite) {
   if (currentSource) currentSource.close();
 
-  $("result").hidden = false;
-  clear(activity);
-  clear(citationsBox);
-  answerBox.textContent = "";
-  answerBox.classList.remove("streaming");
-  trace.hidden = true;
+  addQuestion(question);
+
+  // One container per answer, holding the activity log first and then the answer,
+  // so a reloaded transcript and a live one look the same once finished.
+  const answerTurn = el("div", "turn");
+  const activity = el("div", "activity");
+  const answerBox = el("div", "bubble answer");
+  const extras = el("div", "extras");
+  answerTurn.append(activity, answerBox, extras);
+  transcript.append(answerTurn);
+  scrollToEnd();
   setBusy(true);
+
+  const addStep = (text) => {
+    activity.querySelectorAll(".step.live").forEach((node) => {
+      node.classList.replace("live", "done");
+    });
+    activity.append(el("div", "step live", text));
+    scrollToEnd();
+  };
+  const finishSteps = () => {
+    activity.querySelectorAll(".step.live").forEach((node) => {
+      node.classList.replace("live", "done");
+    });
+  };
 
   let streamed = false;
   const params = new URLSearchParams({ q: question, cite: String(cite) });
+  if (conversationId) params.set("conversation_id", conversationId);
+
   const source = new EventSource(`/api/ask?${params}`);
   currentSource = source;
-
   addStep("Thinking");
+
+  const finish = () => {
+    finishSteps();
+    activity.classList.add("collapsed");
+    source.close();
+    currentSource = null;
+    setBusy(false);
+    $("question").focus();
+  };
+
+  source.addEventListener("conversation", (event) => {
+    // Sent when the server starts a conversation for us; capture it so the next
+    // question continues the same thread instead of starting another.
+    const data = JSON.parse(event.data);
+    conversationId = data.conversation_id;
+    loadConversationList();
+  });
 
   source.addEventListener("stage", (event) => {
     const data = JSON.parse(event.data);
-    addStep(STAGE_LABELS[data.stage] || data.stage);
+    const label = STAGE_LABELS[data.stage] || data.stage;
+    addStep(
+      STAGES_WITH_DETAIL.has(data.stage) && data.detail ? `${label} — ${data.detail}` : label
+    );
   });
 
   source.addEventListener("tool", (event) => {
@@ -375,7 +651,7 @@ function askQuestion(question, cite) {
     // With cite=false this is the whole answer; with cite=true the citation pass
     // streams a better one over the top, so only show it as a placeholder.
     const data = JSON.parse(event.data);
-    if (!cite && data.text) answerBox.textContent = data.text;
+    if (!cite && data.text) setRichText(answerBox, data.text);
   });
 
   source.addEventListener("delta", (event) => {
@@ -386,40 +662,39 @@ function askQuestion(question, cite) {
       answerBox.classList.add("streaming");
       finishSteps();
     }
+    // Plain text while streaming: a partial token like "**pay" has no closing
+    // delimiter yet, so parsing mid-stream would flicker between literal and bold.
+    // The final `answer` event re-renders the whole body with Markdown applied.
     answerBox.textContent += data.text;
+    scrollToEnd();
   });
 
   source.addEventListener("answer", (event) => {
     const data = JSON.parse(event.data);
     // Reconcile: the final payload is authoritative over accumulated deltas.
-    if (data.text) answerBox.textContent = data.text;
+    if (data.conversation_id) conversationId = data.conversation_id;
     answerBox.classList.remove("streaming");
-    renderCitations(data.citations);
+    setRichText(answerBox, data.text || answerBox.textContent);
 
-    if (data.tool_calls && data.tool_calls.length) {
-      $("trace-body").textContent = data.tool_calls
-        .map((call) => `${call.name}(${JSON.stringify(call.input)})`)
-        .join("\n");
-      trace.hidden = false;
-    }
+    clear(extras);
+    const sources = citationsBlock(data.citations);
+    if (sources) extras.append(sources);
+    const trace = toolTrace(data.tool_calls);
+    if (trace) extras.append(trace);
 
-    finishSteps();
-    source.close();
-    currentSource = null;
-    setBusy(false);
+    finish();
+    loadConversationList();
+    scrollToEnd();
   });
 
-  function fail(message) {
+  const fail = (message) => {
     answerBox.classList.remove("streaming");
     if (!answerBox.textContent) {
-      clear(citationsBox);
-      citationsBox.append(el("div", "error-box", message));
+      clear(extras);
+      extras.append(el("div", "error-box", message));
     }
-    finishSteps();
-    source.close();
-    currentSource = null;
-    setBusy(false);
-  }
+    finish();
+  };
 
   // Backend failures arrive as `event: failure` with a payload. The built-in
   // "error" event means the transport dropped and carries no data.
@@ -436,40 +711,33 @@ $("ask-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const question = $("question").value.trim();
   if (!question) return;
+  $("question").value = "";
   askQuestion(question, $("cite").checked);
 });
 
 /* Raw hybrid retrieval, no model in the loop. This is the first diagnostic when
    an answer looks wrong: it separates a retrieval problem from a reasoning one. */
 async function inspectRetrieval(query) {
-  if (currentSource) {
-    currentSource.close();
-    currentSource = null;
-  }
-
-  $("result").hidden = false;
-  clear(activity);
-  clear(citationsBox);
-  answerBox.textContent = "";
-  answerBox.classList.remove("streaming");
-  trace.hidden = true;
-
   const button = $("inspect-button");
   button.disabled = true;
-  addStep("Retrieving (no model)");
+
+  showEmptyState(false);
+  const panel = el("div", "turn inspect");
+  panel.append(el("div", "bubble question", `Inspect retrieval: ${query}`));
+  const body = el("div", "extras");
+  panel.append(body);
+  transcript.append(panel);
+  scrollToEnd();
 
   try {
-    const body = await api(`/api/search?${new URLSearchParams({ q: query, limit: "8" })}`);
-    finishSteps();
-
-    if (body.hit_count === 0) {
-      citationsBox.append(el("div", "error-box", "No passages matched. Nothing would reach the model."));
+    const result = await api(`/api/search?${new URLSearchParams({ q: query, limit: "8" })}`);
+    if (result.hit_count === 0) {
+      body.append(el("div", "error-box", "No passages matched. Nothing would reach the model."));
       return;
     }
-
     const wrap = el("div", "citations");
-    wrap.append(el("h3", null, `Retrieved passages (${body.hit_count}) — ranked, no model`));
-    body.hits.forEach((hit) => {
+    wrap.append(el("h3", null, `Retrieved passages (${result.hit_count}) — ranked, no model`));
+    result.hits.forEach((hit) => {
       const box = el("div", "citation");
       const where = [
         hit.document_title,
@@ -483,12 +751,12 @@ async function inspectRetrieval(query) {
       box.append(quote);
       wrap.append(box);
     });
-    citationsBox.append(wrap);
+    body.append(wrap);
   } catch (err) {
-    finishSteps();
-    citationsBox.append(el("div", "error-box", err.message));
+    body.append(el("div", "error-box", err.message));
   } finally {
     button.disabled = false;
+    scrollToEnd();
   }
 }
 
@@ -513,3 +781,9 @@ $("examples").addEventListener("click", (event) => {
 
 loadStats();
 loadDocuments();
+
+/* A refresh always starts a fresh conversation. Earlier ones are kept and stay
+   selectable from the picker — nothing is deleted, it just does not carry over into
+   the new session's transcript or the model's context. */
+startNewConversation();
+loadConversationList();

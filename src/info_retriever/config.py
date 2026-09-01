@@ -39,6 +39,10 @@ class Settings:
     vllm_temperature: float
     vllm_pdf_dpi: int
 
+    history_max_turns: int
+    history_max_chars: int
+    query_rewrite: bool
+
     embed_model: str
     embed_dim: int
     embed_query_prefix: str
@@ -132,6 +136,10 @@ def settings() -> Settings:
         vllm_max_tokens=int(os.getenv("VLLM_MAX_TOKENS", "4096")),
         vllm_temperature=float(os.getenv("VLLM_TEMPERATURE", "0.2")),
         vllm_pdf_dpi=int(os.getenv("VLLM_PDF_DPI", "150")),
+        history_max_turns=int(os.getenv("HISTORY_MAX_TURNS", "12")),
+        history_max_chars=int(os.getenv("HISTORY_MAX_CHARS", "12000")),
+        query_rewrite=os.getenv("QUERY_REWRITE", "1").strip().lower()
+        not in ("0", "false", "no", "off"),
         embed_model=os.getenv("EMBED_MODEL", "BAAI/bge-m3"),
         embed_dim=int(os.getenv("EMBED_DIM", "1024")),
         embed_query_prefix=os.getenv("EMBED_QUERY_PREFIX", ""),

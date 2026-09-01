@@ -10,6 +10,7 @@ embedding model is not worth loading twice concurrently.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import threading
@@ -20,7 +21,7 @@ from queue import Empty, Queue
 from typing import Any, Iterator
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import auth, db
@@ -31,6 +32,29 @@ STATIC_DIR = Path(__file__).parent / "static"
 _HEARTBEAT_SECONDS = 15.0
 
 _ingest_lock = threading.Lock()
+
+_VERSIONED_ASSETS = ("app.js", "style.css")
+
+
+def _asset_version() -> str:
+    """Short fingerprint of the frontend assets, from their contents.
+
+    Appended to the asset URLs so a browser cannot serve a stale ``app.js`` against
+    a new ``index.html`` — which surfaces as a ``TypeError`` on an element the new
+    markup no longer has, and looks like a backend bug.
+
+    Hashes contents rather than mtimes so identical files always produce the same
+    version: a checkout, a `touch`, or a no-op save does not needlessly invalidate a
+    warm cache. The assets are tens of kilobytes and this runs only for the HTML
+    shell, not per asset request.
+    """
+    digest = hashlib.sha256()
+    for name in _VERSIONED_ASSETS:
+        try:
+            digest.update((STATIC_DIR / name).read_bytes())
+        except OSError:
+            digest.update(b"missing")
+    return digest.hexdigest()[:12]
 
 
 def _describe_failure(exc: BaseException) -> str:
@@ -187,8 +211,15 @@ def create_app() -> FastAPI:
     db.init_db()
 
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html")
+    def index() -> HTMLResponse:
+        # Rewrite asset URLs with a content fingerprint, and tell the browser never
+        # to cache the shell itself. Without this, an edited app.js can be served
+        # from cache against fresh markup.
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        version = _asset_version()
+        for name in _VERSIONED_ASSETS:
+            html = html.replace(f"/static/{name}", f"/static/{name}?v={version}")
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -299,8 +330,36 @@ def create_app() -> FastAPI:
 
     # ----------------------------------------------------------------- ask --
 
+    @app.get("/api/conversations")
+    def list_conversations() -> list[dict[str, Any]]:
+        return db.list_conversations()
+
+    @app.post("/api/conversations")
+    def create_conversation() -> dict[str, Any]:
+        db.init_db()
+        return {"conversation_id": db.create_conversation(), "turns": []}
+
+    @app.get("/api/conversations/{conversation_id}")
+    def get_conversation(conversation_id: str) -> dict[str, Any]:
+        row = db.get_conversation(conversation_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="No such conversation")
+        return {
+            "conversation_id": row["id"],
+            "title": row["title"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "turns": db.conversation_turns(conversation_id),
+        }
+
+    @app.delete("/api/conversations/{conversation_id}")
+    def delete_conversation(conversation_id: str) -> dict[str, bool]:
+        if not db.delete_conversation(conversation_id):
+            raise HTTPException(status_code=404, detail="No such conversation")
+        return {"deleted": True}
+
     @app.get("/api/ask", include_in_schema=False)
-    def ask(q: str, cite: bool = True) -> StreamingResponse:
+    def ask(q: str, cite: bool = True, conversation_id: str | None = None) -> StreamingResponse:
         question = q.strip()
         if not question:
             raise HTTPException(status_code=400, detail="Empty question")
@@ -315,6 +374,7 @@ def create_app() -> FastAPI:
             try:
                 answer = run_ask(
                     question,
+                    conversation_id=conversation_id,
                     cite=cite,
                     emit=lambda kind, payload: queue.put((kind, payload)),
                 )
@@ -326,6 +386,8 @@ def create_app() -> FastAPI:
                             "citations": answer.citations,
                             "documents_used": answer.documents_used,
                             "tool_calls": answer.tool_calls,
+                            "conversation_id": answer.conversation_id,
+                            "ordinal": answer.ordinal,
                         },
                     )
                 )

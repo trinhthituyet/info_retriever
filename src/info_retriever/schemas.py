@@ -33,6 +33,33 @@ class Classification(_Strict):
     summary: str = Field(description="Two or three sentences covering what this document is and its key terms.")
 
 
+class QueryPlan(_Strict):
+    """A user question, normalised for retrieval.
+
+    Documents are assumed to be in English, so a question in any language is rendered
+    into English and searched there — no per-language variants.
+    """
+
+    language: str = Field(
+        description="ISO 639-1 code of the language the question was asked in, e.g. 'en', 'vi'."
+    )
+    is_english: bool = Field(description="True if the question was already written in English.")
+    english: str = Field(
+        description=(
+            "The question in English. If it was already English, repeat it unchanged "
+            "rather than paraphrasing."
+        )
+    )
+    search_queries: list[str] = Field(
+        description=(
+            "Two to four short English keyword queries for a document search, ordered "
+            "most promising first. Use the wording a contract would actually use, not "
+            "the user's casual phrasing — 'notice period', 'termination', not 'how do I "
+            "leave'. No punctuation, no question marks."
+        )
+    )
+
+
 class Party(_Strict):
     name: str = Field(description="Legal name of the person or organisation.")
     role: str = Field(description="Their role, e.g. 'landlord', 'tenant', 'employer', 'insurer', 'policyholder'.")

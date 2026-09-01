@@ -138,13 +138,75 @@ hanging on a spinner: you see each ingest stage per file, and each tool the agen
 calls, then the cited answer streams in token by token. Click any document to see
 its extracted fields, download the original, or remove it from the index.
 
+**Asking is a conversation.** Follow-ups keep context, so this works:
+
+> — What is my notice period?
+> — Sixty days written notice. *(Lease — 12 Rose St, page 4)*
+> — And the deposit?
+> — 3,000 USD, returned within 30 days of vacating. *(same lease, page 2)*
+
+Conversations are stored, so they survive a reload and a restart. **A browser refresh
+starts a fresh conversation** — earlier ones are kept, not deleted, and stay
+selectable from the picker at the top of the panel. **New** starts another fresh one
+and **×** deletes the one you are in. Each conversation is titled from its first
+question.
+
+A new conversation is created lazily, on the first question rather than on load, so
+refreshing repeatedly leaves no empty conversations behind.
+
+What gets carried forward is each turn's **question, answer and cited sources** — not
+the tool transcript. A single `read_document` result can be 60 KB, so replaying
+transcripts would exhaust the context window within a few turns. The documents stay
+in the corpus and the agent re-reads them when a follow-up needs wording it no longer
+has in front of it. Trimming is by turn count and character budget
+(`HISTORY_MAX_TURNS`, `HISTORY_MAX_CHARS`) and drops the *oldest* turns first, since a
+follow-up almost always refers to the most recent one.
+
 **Verify & cite** (on by default) runs the second Claude pass, which re-answers from
 the original documents and returns page references. Turning it off roughly halves
 cost and latency but gives no provenance.
 
+Sources sit behind a collapsed **Sources (n)** disclosure under each answer — click
+the arrow to read the quoted wording and its page. One exception: if a quote could not
+be located in the source text, the block opens itself and says so, because that
+usually means the model paraphrased instead of quoting.
+
 **Inspect retrieval** runs the hybrid search alone, with no model in the loop, and
 shows the ranked passages. This is the first thing to try when an answer looks
 wrong — it separates a retrieval problem from a reasoning problem.
+
+### Asking in any language
+
+Documents are assumed to be in English. Questions are not — one small model call
+detects the question's language, renders it in English, and rewrites it into the
+vocabulary a contract actually uses: "how do I move out" becomes "termination notice
+period". Two to four English queries come back, and RRF fuses their rankings, so a
+passage several phrasings agree on outranks one that matched a single wording.
+
+Three consequences worth knowing:
+
+- **The original question is always kept as one of the search queries.** A rewrite can
+  drop the most selective term — a policy number, an address, a party name.
+- **The answer is written wholly in the language you asked in** — including the clauses
+  it relies on, and its headings and list labels. Names, reference numbers, dates,
+  amounts and currency codes stay exactly as written; a capitalised term the contract
+  defines is translated with the original in brackets on first use, so you can still
+  find it in the document.
+- **The transcript stores your question as typed**, not the rewrite.
+
+The cited excerpts in the **Sources** panel stay verbatim in the document's own
+language. That is deliberate: they are the evidence, and on the vLLM path they are
+matched against the source text, which a translation would defeat.
+
+The activity line under each answer shows what happened — `Reading the question —
+translated from vi · searching as: termination notice period`. Set `QUERY_REWRITE=0` to
+search verbatim and skip the call; if the rewrite fails for any reason it degrades to
+the raw question rather than losing you the answer.
+
+> If you later index non-English documents, revisit this. `bge-m3` handles
+> cross-lingual matching on the dense side, but the other half of the hybrid search is
+> BM25 over FTS5 and matches literal tokens, so English-only queries would not reach
+> them lexically.
 
 The frontend is one HTML file plus vanilla JS and CSS served by FastAPI — no npm,
 no build step, no bundler. Everything document- or model-derived is written with
@@ -165,8 +227,17 @@ network — the whole corpus is readable by anyone who can reach the port.
 | `DELETE /api/documents/{id}` | Remove from the index. |
 | `POST /api/uploads` | Multipart upload → `{job_id}`. |
 | `GET /api/uploads/{job_id}/events` | SSE: `file_start`, `progress`, `file_done`, `file_skipped`, `file_failed`, `summary`. |
-| `GET /api/ask?q=&cite=` | SSE: `stage`, `tool`, `draft`, `delta`, `answer`, `failure`. |
+| `GET /api/conversations` | Conversations, most recent first, with turn counts. |
+| `POST /api/conversations` | Start one → `{conversation_id}`. |
+| `GET /api/conversations/{id}` | Full transcript: every turn with its citations. |
+| `DELETE /api/conversations/{id}` | Delete it; turns cascade. |
+| `GET /api/ask?q=&cite=&conversation_id=` | SSE: `conversation`, `stage`, `tool`, `draft`, `delta`, `answer`, `failure`. |
 | `GET /api/search?q=&limit=&doc_type=` | Raw hybrid retrieval, no LLM. |
+
+`conversation_id` is optional on `/api/ask`. Omit it and one is created — the id
+arrives as a `conversation` event and again on the final `answer`, so a client can
+capture it and send the next question into the same thread. An unknown id starts a
+fresh conversation rather than erroring, so a stale bookmark cannot wedge the UI.
 
 Interactive docs at `/api/docs`. Ingestion is serialised behind a lock — SQLite
 tolerates one writer, and the embedding model is not worth loading twice.
@@ -177,13 +248,18 @@ The API is plain JSON and SSE with no auth, so `curl` works for scripting:
 curl -N 'http://127.0.0.1:8000/api/ask?q=What+is+my+notice+period%3F&cite=false'
 curl 'http://127.0.0.1:8000/api/search?q=termination+notice&limit=5'
 curl -F files=@lease.pdf http://127.0.0.1:8000/api/uploads
+
+# A two-turn conversation
+CID=$(curl -s -XPOST http://127.0.0.1:8000/api/conversations | jq -r .conversation_id)
+curl -N "http://127.0.0.1:8000/api/ask?q=What+is+the+rent%3F&conversation_id=$CID"
+curl -N "http://127.0.0.1:8000/api/ask?q=And+the+deposit%3F&conversation_id=$CID"
 ```
 
 ## Layout
 
 | File | Role |
 |---|---|
-| `db.py` | **All** SQL. Schema, writes, structured queries, vector + keyword search. |
+| `db.py` | **All** SQL. Documents, chunks, conversations, turns, search. |
 | `schemas.py` | Pydantic models = the structured-output schemas Claude extracts into. |
 | `loaders.py` | File → Claude content blocks + text. Decides if OCR is needed. |
 | `chunking.py` | Clause- and page-aware segmentation. |
@@ -192,8 +268,8 @@ curl -F files=@lease.pdf http://127.0.0.1:8000/api/uploads
 | `ingest.py` | Orchestrates the add pipeline. |
 | `retrieval.py` | Hybrid search with Reciprocal Rank Fusion. |
 | `tools.py` | The three agent tools — one registry, both providers. |
-| `agent.py` | Two-pass orchestration; no provider-specific code. |
-| `llm/` | `base.py` (interface), `prompts.py` (shared), `anthropic_provider.py`, `vllm_provider.py`, `citations.py` (quote locating). |
+| `agent.py` | Conversation orchestration; no provider-specific code. |
+| `llm/` | `base.py` (interface, `Turn`, history rendering), `prompts.py` (shared), `anthropic_provider.py`, `vllm_provider.py`, `citations.py` (quote locating). |
 | `auth.py` | appleconnect token minting and refresh. |
 | `web.py` | FastAPI routes, SSE streaming, ingest job runner, entry point. |
 | `static/` | The frontend: `index.html`, `app.js`, `style.css`. |

@@ -59,6 +59,31 @@ create virtual table if not exists chunk_fts using fts5(
     chunk_id UNINDEXED,
     tokenize = 'unicode61 remove_diacritics 2'
 );
+
+create table if not exists conversations (
+    id         text primary key,
+    title      text,
+    created_at text not null,
+    updated_at text not null
+);
+
+create index if not exists idx_conversations_updated on conversations(updated_at desc);
+
+-- One question and its answer. Deliberately stores the *outcome* of a turn, not the
+-- tool transcript: a single read_document result can be 60 KB, so replaying full
+-- transcripts would exhaust the context window within a few turns. The documents
+-- stay in the corpus and the agent can re-read them if a follow-up needs them.
+create table if not exists turns (
+    conversation_id text not null references conversations(id) on delete cascade,
+    ordinal         integer not null,
+    question        text not null,
+    answer          text not null,
+    citations       text not null default '[]',
+    documents_used  text not null default '[]',
+    tool_calls      text not null default '[]',
+    created_at      text not null,
+    primary key (conversation_id, ordinal)
+);
 """
 
 
@@ -362,3 +387,135 @@ def stats() -> dict[str, int]:
 
 def today() -> str:
     return date.today().isoformat()
+
+
+# --------------------------------------------------------------------------- #
+# conversations
+# --------------------------------------------------------------------------- #
+
+_TITLE_MAX = 70
+
+
+def _now() -> str:
+    """Microsecond-precision ISO timestamp.
+
+    Not ``timespec="seconds"``: two turns in the same second would tie, and
+    conversation ordering is by ``updated_at``. Ties made the most-recent
+    conversation land arbitrarily in the list.
+    """
+    return datetime.now().isoformat()
+
+
+def _title_from(question: str) -> str:
+    collapsed = " ".join(question.split())
+    if len(collapsed) <= _TITLE_MAX:
+        return collapsed
+    return collapsed[: _TITLE_MAX - 1].rstrip() + "…"
+
+
+def create_conversation(title: str | None = None) -> str:
+    conversation_id = str(uuid.uuid4())
+    now = _now()
+    with session() as conn:
+        conn.execute(
+            "insert into conversations (id, title, created_at, updated_at) values (?,?,?,?)",
+            (conversation_id, title, now, now),
+        )
+    return conversation_id
+
+
+def get_conversation(conversation_id: str) -> sqlite3.Row | None:
+    with session() as conn:
+        return conn.execute(
+            "select * from conversations where id = ?", (conversation_id,)
+        ).fetchone()
+
+
+def list_conversations(limit: int = 50) -> list[dict[str, Any]]:
+    with session() as conn:
+        rows = conn.execute(
+            """
+            select c.id, c.title, c.created_at, c.updated_at,
+                   (select count(*) from turns t where t.conversation_id = c.id) as turn_count
+            from conversations c
+            order by c.updated_at desc, c.rowid desc
+            limit ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_conversation(conversation_id: str) -> bool:
+    with session() as conn:
+        cursor = conn.execute("delete from conversations where id = ?", (conversation_id,))
+        return cursor.rowcount > 0
+
+
+def conversation_turns(conversation_id: str) -> list[dict[str, Any]]:
+    """Every turn, oldest first, with JSON columns already decoded."""
+    with session() as conn:
+        rows = conn.execute(
+            "select * from turns where conversation_id = ? order by ordinal",
+            (conversation_id,),
+        ).fetchall()
+
+    turns: list[dict[str, Any]] = []
+    for row in rows:
+        turn = dict(row)
+        for field in ("citations", "documents_used", "tool_calls"):
+            turn[field] = json.loads(turn[field])
+        turns.append(turn)
+    return turns
+
+
+def append_turn(
+    conversation_id: str,
+    *,
+    question: str,
+    answer: str,
+    citations: list[Any],
+    documents_used: list[Any],
+    tool_calls: list[Any],
+) -> int:
+    """Record a completed turn and return its ordinal.
+
+    Also names the conversation from its first question, so the UI has something
+    to show without a separate titling call.
+    """
+    now = _now()
+    with session() as conn:
+        row = conn.execute(
+            "select coalesce(max(ordinal) + 1, 0) as next from turns where conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        ordinal = row["next"]
+
+        conn.execute(
+            """
+            insert into turns (
+                conversation_id, ordinal, question, answer,
+                citations, documents_used, tool_calls, created_at
+            ) values (?,?,?,?,?,?,?,?)
+            """,
+            (
+                conversation_id,
+                ordinal,
+                question,
+                answer,
+                json.dumps(citations, ensure_ascii=False),
+                json.dumps(documents_used, ensure_ascii=False),
+                json.dumps(tool_calls, ensure_ascii=False),
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            update conversations
+               set updated_at = ?,
+                   title = coalesce(title, ?)
+             where id = ?
+            """,
+            (now, _title_from(question), conversation_id),
+        )
+    return ordinal

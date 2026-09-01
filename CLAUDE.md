@@ -22,9 +22,9 @@ uv pip install -e '.[vllm]'         # adds pymupdf, only needed for scanned PDFs
 cp .env.example .env                # pick LLM_PROVIDER, then fill that section
 
 .venv/bin/python -m pytest -q                                   # all tests
-.venv/bin/python -m pytest tests/test_providers.py -q            # one file
+.venv/bin/python -m pytest tests/test_conversation.py -q         # one file
 .venv/bin/python -m pytest tests/test_pipeline.py::test_date_normalisation -q   # one test
-.venv/bin/python -m pytest -q -k chunk                           # by keyword
+.venv/bin/python -m pytest -q -k history                         # by keyword
 
 info-retriever                       # serve on 127.0.0.1:8000
 info-retriever --port 3000 --reload
@@ -44,19 +44,65 @@ diagnostic when an answer looks wrong**: it runs hybrid retrieval with no model 
 the loop, separating a retrieval problem from a reasoning problem. `GET /api/stats`
 reports which provider and model are live.
 
+Test files map to the seams, which is where to add a new case:
+
+| File | Covers | Stubs |
+|---|---|---|
+| `test_pipeline.py` | chunking, date normalisation, storage round-trip | fake vectors |
+| `test_web.py` | routes, SSE framing, upload jobs, conversation endpoints | `agent.ask` |
+| `test_conversation.py` | real `agent.ask`, history rendering, document fallback | a fake provider |
+| `test_query_rewrite.py` | language detection, translation, multi-query retrieval | the same fake provider |
+| `test_markdown.py` | inline Markdown, paragraph spacing, injection sinks | nothing (static) |
+| `test_providers.py` | provider selection, vLLM adapters, quote locating | `_complete` |
+| `test_vllm_http.py` | the real `openai` SDK against a fake server | nothing (binds a socket) |
+| `test_auth.py` | appleconnect minting, refresh, credential leaks | `subprocess.run` |
+
 ## Architecture
 
 ```
 add:  loaders → (extract.transcribe if no text layer) → extract.classify
               → extract.extract_fields → chunking → embed → db
-ask:  agent._run_agent  (tool_runner + 3 tools + cached catalogue)
-      → agent._cite     (re-send documents with citations enabled)
+ask:  provider.run_agent (tools + cached catalogue + prior turns)
+      → provider.cite    (re-send documents, attach verbatim quotes)
+      → db.append_turn   (the turn becomes history for the next question)
 ```
 
 `web.py` is a thin shell over `ingest.py`, `retrieval.py` and `agent.py` — it owns
 HTTP, SSE framing and the ingest job runner, and **no pipeline logic**. Keep new
 behaviour in the pipeline modules so it stays reachable from tests and scripts, not
 only from a route handler.
+
+### Conversations carry outcomes, not transcripts
+
+`turns` stores each question, answer, citations and documents used. It deliberately
+does **not** store the tool transcript: a single `read_document` result is capped at
+60 KB, so replaying transcripts would exhaust the context window within three turns.
+`llm/base.py:render_history` turns stored turns into `(role, content)` pairs, trimming
+the **oldest** first (a follow-up refers to the most recent turn) under both a turn
+count and a character budget.
+
+Consequences to respect:
+
+- **The model cannot see documents it read on an earlier turn.** `agent.INSTRUCTIONS`
+  says so explicitly and tells it to re-read. Removing that line produces confident
+  answers from a half-remembered document.
+- **Cited source titles are appended to each replayed answer.** That is what makes
+  "and the deposit?" resolvable; without it an elliptical follow-up has no referent.
+- **`cite` receives history too**, for the same reason — the citation pass sees the
+  raw follow-up question and would otherwise be interpreting three words in a vacuum.
+- **`_documents_consulted` falls back to the previous turn's documents** before
+  falling back to search. A follow-up answered from context opens no document, and
+  searching "and the deposit?" retrieves the wrong thing.
+- **Conversation timestamps are microsecond precision.** `timespec="seconds"` caused
+  ties in `updated_at`, which made the most-recent conversation sort arbitrarily;
+  ordering is `updated_at desc, rowid desc`.
+- **An unknown `conversation_id` starts a fresh conversation** rather than 404ing, so
+  a stale bookmarked id cannot wedge the UI. The web-test stub mirrors this.
+- **A browser refresh starts a fresh conversation, and creates it lazily.** The
+  frontend leaves `conversationId` null on load and lets the first question create the
+  row server-side, so reloading never leaves empty conversations behind. Earlier
+  conversations are preserved and reachable from the picker — refresh is not a delete.
+  Do not reintroduce a `POST /api/conversations` on load.
 
 ### The provider seam is semantic, not transport
 
@@ -111,6 +157,40 @@ Page-level citations require the original PDF, which is why `_citable_block` re-
 the stored blob for PDFs and falls back to extracted text (character offsets) for
 DOCX/text. Images cannot be cited at all.
 
+### Query normalisation assumes English documents
+
+`agent._plan` calls `provider.plan_query(question)` before searching, producing a
+`QueryPlan`: detected language, an English rendering, and rewritten **English** search
+queries. `hybrid_search` accepts a list and fuses the rankings with RRF.
+
+**Documents are assumed to be English** — that assumption is load-bearing. `bge-m3` is
+still the default embedder and `documents.language` is still recorded, but nothing
+drives retrieval off it. If non-English documents are indexed, English-only queries will
+reach them on the dense side and miss on the BM25/FTS5 side, which matches literal
+tokens; the fix is to have `plan_query` emit a query per corpus language again.
+
+Rules that are easy to break:
+
+- **The raw question is always appended to `search_queries`.** A rewrite can drop the
+  most selective term — a policy number, an address, a party name.
+- **`_plan` degrades, never raises.** An unrewritten question still retrieves; losing
+  the answer over a failed rewrite would be worse. It emits a `planning` stage saying
+  it was skipped.
+- **The stored turn keeps the question as typed**, not the rewrite — the transcript is
+  the user's words.
+- **The answer-language rule must reach the *citation* pass, not just the agent pass.**
+  `cite` produces the text the user reads, and on Anthropic it is called **without a
+  `system=`** — so `agent.INSTRUCTIONS` never reaches it. A rule placed only there
+  governs the draft and has no effect on the output. `prompts.language_rule()` is the
+  single definition, injected into both the agent turn prompt and `cite_user_prompt`;
+  `agent.ask` passes `plan.language` to `cite`.
+- **The answer is translated in full; the cited excerpts are not.** Prose, headings and
+  quoted clauses go into the user's language. `cited_text` and the vLLM `quotes` stay
+  verbatim — they are located in the source text, and a translated quote cannot match.
+- **Only `planning`'s `stage` detail is rendered in the UI** (`STAGES_WITH_DETAIL` in
+  `app.js`); for other stages the detail restates the label.
+- `QUERY_REWRITE=0` disables the call and searches verbatim.
+
 ## Invariants that will bite you
 
 - **There is no CLI, by choice.** It was removed so there is exactly one code path
@@ -130,6 +210,12 @@ DOCX/text. Images cannot be cited at all.
   `auth._mint` reports `stderr` only, because appleconnect can echo the token on
   `stdout` even when it exits non-zero. `auth.describe()` and `/api/stats` are the
   audited surfaces; there are tests for both.
+- **The HTML shell is `no-store` and asset URLs are content-fingerprinted**
+  (`web._asset_version`). Without this a browser serves a cached `app.js` against
+  fresh markup, which throws `TypeError: null is not an object` on an element the new
+  markup no longer has and reads as a backend bug. If you rename or remove an element
+  id, `test_frontend_has_no_stale_single_answer_selectors` catches the leftover
+  reference.
 - **All SQL lives in `db.py`.** Nothing else opens a connection or writes a query.
   This is what makes the documented Postgres + pgvector migration a one-file change.
 - **`sqlite-vec` KNN rejects a bound `LIMIT`** — it needs `where embedding match ?

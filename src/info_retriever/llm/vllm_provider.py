@@ -23,10 +23,19 @@ from typing import Any, Mapping, Sequence
 
 from ..config import settings
 from ..loaders import LoadedFile, as_image_parts
-from ..schemas import BaseContract, Classification, extraction_model_for
+from ..schemas import BaseContract, Classification, QueryPlan, extraction_model_for
 from . import citations as citation_tools
 from . import prompts
-from .base import AgentResult, CitedResult, Emit, LLMProvider, ProviderError, no_emit
+from .base import (
+    AgentResult,
+    CitedResult,
+    Emit,
+    LLMProvider,
+    ProviderError,
+    Turn,
+    no_emit,
+    render_history,
+)
 
 MAX_TOOL_ITERATIONS = 8
 
@@ -189,6 +198,14 @@ class VLLMProvider(LLMProvider):
             schema_name=f"{doc_type}_contract",
         )
 
+    def plan_query(self, question: str) -> QueryPlan:
+        return self._json_schema_call(
+            system=prompts.QUERY_PLAN_SYSTEM,
+            prompt=prompts.query_plan_user_prompt(question),
+            output_format=QueryPlan,
+            schema_name="query_plan",
+        )
+
     # ------------------------------------------------------------------ agent --
 
     @staticmethod
@@ -217,15 +234,25 @@ class VLLMProvider(LLMProvider):
         instructions: str,
         catalogue: str,
         tools: Sequence[Any],
+        history: Sequence[Turn] = (),
         emit: Emit = no_emit,
     ) -> AgentResult:
+        cfg = settings()
         by_name = {tool.name: tool for tool in tools}
         messages: list[dict[str, Any]] = [
             # One system string, not two cacheable blocks: an OpenAI-compatible
             # server has no prompt-cache breakpoints to place.
             {"role": "system", "content": f"{instructions}\n\n{catalogue}"},
-            {"role": "user", "content": question},
         ]
+        messages.extend(
+            {"role": role, "content": content}
+            for role, content in render_history(
+                history,
+                max_turns=cfg.history_max_turns,
+                max_chars=cfg.history_max_chars,
+            )
+        )
+        messages.append({"role": "user", "content": question})
 
         emit("stage", {"stage": "searching", "detail": "reading the document catalogue"})
 
@@ -313,10 +340,13 @@ class VLLMProvider(LLMProvider):
         question: str,
         draft: str,
         documents: Sequence[Mapping[str, Any]],
+        history: Sequence[Turn] = (),
+        language: str = "en",
         emit: Emit = no_emit,
     ) -> CitedResult:
         from .. import db
 
+        cfg = settings()
         usable = [d for d in documents if (d.get("full_text") or "").strip()]
         if not usable:
             return CitedResult(text=draft)
@@ -335,14 +365,25 @@ class VLLMProvider(LLMProvider):
             for d in usable
         )
         prompt = (
-            f"{prompts.cite_user_prompt(question, draft, db.today())}\n\n{attached}"
+            f"{prompts.cite_user_prompt(question, draft, db.today(), language)}\n\n{attached}"
         )
 
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": prompts.QUOTE_CITE_SYSTEM}
+        ]
+        # Prior turns before the documents, so an elliptical follow-up has a referent.
+        messages.extend(
+            {"role": role, "content": content}
+            for role, content in render_history(
+                history,
+                max_turns=cfg.history_max_turns,
+                max_chars=cfg.history_max_chars,
+            )
+        )
+        messages.append({"role": "user", "content": prompt})
+
         response = self._complete(
-            messages=[
-                {"role": "system", "content": prompts.QUOTE_CITE_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
+            messages=messages,
             response_format={"type": "json_object"},
         )
         body = self._text_of(response)
