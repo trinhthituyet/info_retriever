@@ -27,7 +27,7 @@ address and policy numbers are never sent to a second vendor.
    └───┬──────────────┘  └────────┬───────┘        │
        └──────────┬───────────────┘           answer + page spans
                   ▼
-      SQLite: documents + chunks + chunk_vec + chunk_fts
+   SQLite or Postgres: documents + chunks (+ vector and keyword indexes)
 ```
 
 ### The two design decisions worth knowing
@@ -122,8 +122,8 @@ EMBED_QUERY_PREFIX=query:•             # e5 models require these; use a space,
 EMBED_PASSAGE_PREFIX=passage:•
 ```
 
-Changing the model means changing `EMBED_DIM`, and the vector table's dimension is
-fixed at creation — delete `data/documents.db` and re-ingest.
+Changing the model means changing `EMBED_DIM`, and the vector column's width is fixed
+at creation on both backends — drop the database and re-ingest.
 
 ## Using it
 
@@ -259,7 +259,7 @@ curl -N "http://127.0.0.1:8000/api/ask?q=And+the+deposit%3F&conversation_id=$CID
 
 | File | Role |
 |---|---|
-| `db.py` | **All** SQL. Documents, chunks, conversations, turns, search. |
+| `db/` | **All** SQL. `__init__.py` is the API and the portable queries; `sqlite_backend.py` and `postgres_backend.py` supply only what differs. |
 | `schemas.py` | Pydantic models = the structured-output schemas Claude extracts into. |
 | `loaders.py` | File → Claude content blocks + text. Decides if OCR is needed. |
 | `chunking.py` | Clause- and page-aware segmentation. |
@@ -296,21 +296,61 @@ curl -N "http://127.0.0.1:8000/api/ask?q=And+the+deposit%3F&conversation_id=$CID
   flag ambiguity rather than resolve it. Treat output as a fast index into your own
   paperwork, not an opinion.
 
-## Moving to Postgres + pgvector
+## Choosing a storage engine
 
-SQLite is the right default here: no server, and the whole corpus is one file you
-can encrypt and back up. Outgrow it — concurrent writers, a web frontend, more than
-a few thousand documents — and only `db.py` changes:
+`DB_BACKEND` selects it. SQLite is the default: no server, and the whole corpus is one
+file you can encrypt and back up. Move to Postgres when you want concurrent writers or
+outgrow a single file.
 
-| SQLite | Postgres |
-|---|---|
-| `chunk_vec` virtual table (`vec0`) | `embedding vector(1024)` column + HNSW index |
-| `chunk_fts` virtual table (`fts5`) | `tsvector` generated column + GIN index |
-| `extracted` TEXT holding JSON | `jsonb` + generated date columns |
-| `bm25(chunk_fts)` | `ts_rank_cd(tsv, query)` |
+```bash
+DB_BACKEND=sqlite                                              # default
+```
 
-The RRF fusion in `retrieval.py`, the tools, and the agent are all storage-agnostic
-and carry over unchanged.
+```bash
+DB_BACKEND=postgres
+POSTGRES_DSN=postgresql://user:pass@localhost:5432/info_retriever
+```
+
+| | `sqlite` | `postgres` |
+|---|---|---|
+| Vectors | `chunk_vec` virtual table (`vec0`) | `embedding vector(N)` column, HNSW index |
+| Keywords | `chunk_fts` virtual table (FTS5, `bm25()`) | generated `tsvector`, GIN index, `ts_rank_cd` |
+| JSON | `TEXT` holding JSON | `jsonb`, GIN-indexed |
+| Concurrency | one writer | many |
+| Setup | none | a server, and rights to `create extension vector` |
+
+Both report the same row shapes, including the `distance` scale RRF fusion depends on,
+so `retrieval.py`, the tools and the agent are unchanged by the choice. `/api/stats`
+reports which engine is live.
+
+### Getting a Postgres to point at
+
+```bash
+docker run -d --name ir-pg -p 5432:5432 \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=info_retriever \
+  pgvector/pgvector:pg17
+```
+
+The `pgvector/pgvector` image ships the extension; on a stock Postgres you need
+`pgvector` installed first. The app runs `create extension if not exists vector`
+itself, so the role needs permission to do that — or run it once as a superuser.
+
+### Switching, and what does not migrate
+
+Nothing copies data between engines. Point at the new backend and re-ingest; the
+originals are all in `data/blobs`, so re-ingestion is just the extraction cost again.
+The embedding dimension is fixed in the schema of both (`vector(N)` / `vec0 float[N]`),
+so changing `EMBED_DIM` still means a fresh database either way.
+
+### Verifying the Postgres path
+
+The backend parity suite runs the same assertions against both engines. It skips
+Postgres unless you point it at one:
+
+```bash
+POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/info_retriever_test \
+  .venv/bin/python -m pytest tests/test_db_backends.py -q
+```
 
 ## Tests
 

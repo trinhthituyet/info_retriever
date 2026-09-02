@@ -16,6 +16,9 @@ class Settings:
     db_path: Path
     blob_dir: Path
 
+    db_backend: str
+    postgres_dsn: str | None
+
     llm_provider: str
 
     auth_mode: str
@@ -63,6 +66,7 @@ APPLECONNECT_APP_ID = "hvys3fcwcteqrvw3qzkvtk86viuoqv"
 APPLECONNECT_SCOPES = "openid,dsid,accountname,profile,groups"
 
 LLM_PROVIDERS = ("anthropic", "vllm")
+DB_BACKENDS = ("sqlite", "postgres")
 AUTH_MODES = ("appleconnect", "default")
 
 
@@ -100,6 +104,15 @@ def settings() -> Settings:
     blob_dir.mkdir(parents=True, exist_ok=True)
 
     llm_provider = _one_of("LLM_PROVIDER", os.getenv("LLM_PROVIDER", "anthropic"), LLM_PROVIDERS)
+    db_backend = _one_of("DB_BACKEND", os.getenv("DB_BACKEND", "sqlite"), DB_BACKENDS)
+
+    # DATABASE_URL is the near-universal name, so accept it as a fallback.
+    postgres_dsn = (os.getenv("POSTGRES_DSN") or os.getenv("DATABASE_URL") or "").strip()
+    if db_backend == "postgres" and not postgres_dsn:
+        raise ValueError(
+            "DB_BACKEND=postgres requires POSTGRES_DSN (or DATABASE_URL), e.g. "
+            "postgresql://user:pass@localhost:5432/info_retriever"
+        )
     auth_mode = _one_of(
         "ANTHROPIC_AUTH_MODE", os.getenv("ANTHROPIC_AUTH_MODE", "appleconnect"), AUTH_MODES
     )
@@ -117,6 +130,8 @@ def settings() -> Settings:
         data_dir=data_dir,
         db_path=data_dir / "documents.db",
         blob_dir=blob_dir,
+        db_backend=db_backend,
+        postgres_dsn=postgres_dsn or None,
         llm_provider=llm_provider,
         auth_mode=auth_mode,
         base_url=base_url or None,

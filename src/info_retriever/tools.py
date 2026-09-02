@@ -100,19 +100,9 @@ def read_document(document_id: str, start_page: int | None = None, end_page: int
     text = row["full_text"]
 
     if start_page is not None or end_page is not None:
-        with db.session() as conn:
-            chunk_rows = conn.execute(
-                """
-                select page, content from chunks
-                where document_id = ?
-                  and (? is null or page >= ?)
-                  and (? is null or page <= ?)
-                order by ordinal
-                """,
-                (document_id, start_page, start_page, end_page, end_page),
-            ).fetchall()
-        if chunk_rows:
-            text = "\n\n".join(chunk["content"] for chunk in chunk_rows)
+        pages = db.document_page_text(document_id, start_page=start_page, end_page=end_page)
+        if pages:
+            text = pages
 
     truncated = len(text) > MAX_DOC_CHARS
     if truncated:

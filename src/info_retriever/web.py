@@ -236,8 +236,10 @@ def create_app() -> FastAPI:
             "model": cfg.active_model,
             "extract_model": cfg.extract_model if cfg.is_anthropic else cfg.vllm_model,
             "embed_model": cfg.embed_model,
-            # Non-secret: which provider and gateway are in play. Never a credential.
+            # Non-secret: which provider, gateway and storage engine are in play.
+            # Never a credential — the DSN password is redacted by the backend.
             **llm.provider().describe(),
+            **db.describe(),
         }
 
     @app.get("/api/documents")
@@ -274,7 +276,9 @@ def create_app() -> FastAPI:
             "end_date": row["end_date"],
             "page_count": row["page_count"],
             "mime_type": row["mime_type"],
-            "extracted": json.loads(row["extracted"]),
+            # Not json.loads: SQLite stores text, Postgres returns jsonb already
+            # decoded. The backend knows which.
+            "extracted": db.backend().load_json(row["extracted"]),
         }
 
     @app.get("/api/documents/{document_id}/file", include_in_schema=False)

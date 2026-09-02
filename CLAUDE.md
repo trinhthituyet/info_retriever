@@ -5,9 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Agentic RAG over personal contract documents (rental, employment, insurance).
-**Embeddings always run locally** via sentence-transformers. Storage is SQLite +
-`sqlite-vec` + FTS5. **The FastAPI web app is the only entry point** — there is no
-CLI, and one deliberately does not exist (see Invariants).
+**Embeddings always run locally** via sentence-transformers. **The FastAPI web app is
+the only entry point** — there is no CLI, and one deliberately does not exist (see
+Invariants).
+
+**Two interchangeable storage backends**, selected by `DB_BACKEND`: `sqlite`
+(`sqlite-vec` + FTS5, the default) and `postgres` (pgvector + `tsvector`).
 
 **Two interchangeable model backends**, selected by `LLM_PROVIDER`:
 `anthropic` (Claude via Apple's Floodgate gateway, appleconnect OAuth) and `vllm`
@@ -25,6 +28,10 @@ cp .env.example .env                # pick LLM_PROVIDER, then fill that section
 .venv/bin/python -m pytest tests/test_conversation.py -q         # one file
 .venv/bin/python -m pytest tests/test_pipeline.py::test_date_normalisation -q   # one test
 .venv/bin/python -m pytest -q -k history                         # by keyword
+
+# Verify the Postgres backend against a real server (skipped otherwise)
+POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/ir_test \
+  .venv/bin/python -m pytest tests/test_db_backends.py -q
 
 info-retriever                       # serve on 127.0.0.1:8000
 info-retriever --port 3000 --reload
@@ -56,6 +63,7 @@ Test files map to the seams, which is where to add a new case:
 | `test_providers.py` | provider selection, vLLM adapters, quote locating | `_complete` |
 | `test_vllm_http.py` | the real `openai` SDK against a fake server | nothing (binds a socket) |
 | `test_auth.py` | appleconnect minting, refresh, credential leaks | `subprocess.run` |
+| `test_db_backends.py` | backend parity, `?`→`%s`, DSN redaction, DDL | none; Postgres skips without `POSTGRES_DSN` |
 
 ## Architecture
 
@@ -95,7 +103,7 @@ Consequences to respect:
   searching "and the deposit?" retrieves the wrong thing.
 - **Conversation timestamps are microsecond precision.** `timespec="seconds"` caused
   ties in `updated_at`, which made the most-recent conversation sort arbitrarily;
-  ordering is `updated_at desc, rowid desc`.
+  ordering is `updated_at desc, id desc` — `rowid` does not exist in Postgres.
 - **An unknown `conversation_id` starts a fresh conversation** rather than 404ing, so
   a stale bookmarked id cannot wedge the UI. The web-test stub mirrors this.
 - **A browser refresh starts a fresh conversation, and creates it lazily.** The
@@ -216,8 +224,25 @@ Rules that are easy to break:
   markup no longer has and reads as a backend bug. If you rename or remove an element
   id, `test_frontend_has_no_stale_single_answer_selectors` catches the leftover
   reference.
-- **All SQL lives in `db.py`.** Nothing else opens a connection or writes a query.
-  This is what makes the documented Postgres + pgvector migration a one-file change.
+- **All SQL lives in `db/`.** Nothing else opens a connection or writes a query — that
+  property is what made adding the Postgres backend possible without touching a single
+  caller. `document_page_text` exists because `tools.py` had one stray query; if you
+  need a new one, add a function to `db/__init__.py` rather than reaching for
+  `db.session()`.
+- **`DB_BACKEND` picks the engine: `sqlite` (default) or `postgres`.** Portable queries
+  live in `db/__init__.py` with `?` markers; a backend supplies only the DDL, the two
+  search queries, chunk insert/delete, and JSON encoding. Both return identical row
+  shapes, *including the `distance` scale* — RRF fusion in `retrieval.py` compares
+  ranks across backends and must not need a branch.
+- **Postgres translates `?` to `%s` textually** (`PostgresBackend._q`). A literal `?`
+  inside a SQL string would be rewritten into a parameter marker;
+  `test_no_portable_sql_contains_a_literal_question_mark` guards that.
+- **Never `json.loads` a column.** SQLite stores JSON as text, Postgres returns `jsonb`
+  already decoded. Use `db.backend().load_json()` — `web.py` had this bug.
+- **The Postgres DDL uses `.replace`, not `str.format`.** It contains `'{}'::jsonb`
+  defaults, which `format` reads as positional fields and rejects. Use `schema_ddl()`.
+- **`to_tsvector` and `to_tsquery` must use the same configuration** (`'simple'`). An
+  English stemmer on one side searches for lexemes the other side never produced.
 - **`sqlite-vec` KNN rejects a bound `LIMIT`** — it needs `where embedding match ?
   and k = ?`. A parameterised `limit ?` raises `OperationalError`.
 - **`EMBED_DIM` is baked into the `chunk_vec` table at creation.** Changing
