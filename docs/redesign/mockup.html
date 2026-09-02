@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Info Retriever — redesign</title>
+<style>
+  :root{
+    --bg:#F6F5F2;
+    --surface:#FFFFFF;
+    --surface-2:#FBFAF8;
+    --line:#E7E4DD;
+    --line-soft:#EFEDE7;
+    --ink:#141D1A;
+    --ink-2:#4E5956;
+    --ink-3:#78827F;
+    --accent:#0E5A48;
+    --accent-hover:#0B4839;
+    --accent-tint:#E8F0EC;
+    --accent-tint-2:#D6E5DE;
+    --amber:#9A5B08;
+    --amber-tint:#FDF2E1;
+    --red:#A8321F;
+    --red-tint:#FCEEEB;
+    --radius:14px;
+    --shadow-sm:0 1px 2px rgba(20,29,26,.05), 0 1px 1px rgba(20,29,26,.03);
+    --shadow-md:0 2px 4px rgba(20,29,26,.04), 0 8px 24px rgba(20,29,26,.06);
+    --shadow-lg:0 4px 8px rgba(20,29,26,.05), 0 16px 40px rgba(20,29,26,.10);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    width:1680px;height:1080px;overflow:hidden;
+    background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Helvetica Neue",Arial,sans-serif;
+    font-size:14px;line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+    font-feature-settings:"cv05" 1,"ss01" 1;
+  }
+  svg{display:block}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+
+  /* ---------- top bar ---------- */
+  .topbar{
+    height:60px;display:flex;align-items:center;gap:16px;
+    padding:0 24px;background:var(--surface);
+    border-bottom:1px solid var(--line);
+  }
+  .brand{display:flex;align-items:center;gap:10px}
+  .logo{
+    width:30px;height:30px;border-radius:9px;background:var(--accent);
+    display:grid;place-items:center;box-shadow:0 1px 2px rgba(14,90,72,.35);
+  }
+  .brand-name{font-size:15px;font-weight:650;letter-spacing:-.01em}
+  .brand-sub{font-size:13px;color:var(--ink-3)}
+  .divider-v{width:1px;height:20px;background:var(--line)}
+  .spacer{flex:1}
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;
+    border:1px solid var(--line);border-radius:999px;background:var(--surface);
+    font-size:12.5px;color:var(--ink-2);white-space:nowrap;
+  }
+  .chip svg{flex:none}
+  .chip.tint{background:var(--accent-tint);border-color:var(--accent-tint-2);color:#0C4A3C;font-weight:550}
+  .avatar{
+    width:30px;height:30px;border-radius:999px;background:#DCE5E1;color:#0E5A48;
+    display:grid;place-items:center;font-size:12px;font-weight:650;border:1px solid #CBD8D3;
+  }
+
+  /* ---------- shell ---------- */
+  .shell{display:grid;grid-template-columns:272px minmax(0,1fr) 404px;height:calc(1080px - 60px)}
+
+  /* ---------- left rail ---------- */
+  .rail{
+    background:var(--surface);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;padding:16px 14px 14px;min-height:0;
+  }
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    height:38px;padding:0 14px;border-radius:10px;border:1px solid transparent;
+    font-size:13.5px;font-weight:600;cursor:pointer;background:var(--surface);color:var(--ink);
+  }
+  .btn-primary{background:var(--accent);color:#fff;box-shadow:0 1px 2px rgba(14,90,72,.3)}
+  .btn-ghost{border-color:var(--line);color:var(--ink-2);font-weight:550}
+  .btn-block{width:100%}
+
+  .drop{
+    margin-top:10px;border:1.5px dashed #D6D2C8;border-radius:12px;background:var(--surface-2);
+    padding:10px 12px;display:flex;align-items:center;gap:9px;
+    font-size:12px;color:var(--ink-3);
+  }
+
+  .nav{margin-top:18px;display:flex;flex-direction:column;gap:2px}
+  .navlabel{
+    font-size:11px;font-weight:650;letter-spacing:.07em;text-transform:uppercase;
+    color:#6E7875;padding:0 8px;margin:0 0 8px;
+  }
+  .navitem{
+    display:flex;align-items:center;gap:10px;height:34px;padding:0 8px;border-radius:9px;
+    font-size:13.5px;color:var(--ink-2);font-weight:550;
+  }
+  .navitem .count{margin-left:auto;font-size:12px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+  .navitem.active{background:var(--accent-tint);color:#0C4A3C;font-weight:650}
+  .navitem.active .count{color:#2E6B5A}
+
+  .section-head{
+    display:flex;align-items:center;margin:22px 0 8px;padding:0 8px;
+  }
+  .section-head .navlabel{margin:0;padding:0}
+  .iconbtn{
+    margin-left:auto;width:24px;height:24px;border-radius:7px;border:1px solid var(--line);
+    background:var(--surface);display:grid;place-items:center;color:var(--ink-2);cursor:pointer;
+  }
+  .convo{
+    padding:8px 9px;border-radius:10px;display:block;border:1px solid transparent;
+  }
+  .convo + .convo{margin-top:1px}
+  .convo .t{font-size:13px;font-weight:550;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .convo .m{font-size:11.5px;color:var(--ink-3);margin-top:2px;display:flex;gap:6px;align-items:center}
+  .convo.active{background:var(--surface-2);border-color:var(--line);box-shadow:var(--shadow-sm)}
+  .convo.active .t{font-weight:650}
+  .dot{width:3px;height:3px;border-radius:999px;background:#C6CCCA}
+
+  /* upload tray */
+  .tray{
+    margin-top:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);
+    box-shadow:var(--shadow-md);overflow:hidden;
+  }
+  .tray-head{
+    display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--line-soft);
+    font-size:12.5px;font-weight:650;white-space:nowrap;
+  }
+  .tray-head .st{margin-left:auto;font-size:11px;font-weight:600;color:var(--ink-3)}
+  .frow{display:flex;gap:9px;padding:9px 11px;align-items:flex-start}
+  .frow + .frow{border-top:1px solid var(--line-soft)}
+  .fico{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;flex:none;margin-top:1px}
+  .fname{font-size:12.5px;font-weight:550;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fmeta{font-size:11.5px;margin-top:2px;display:flex;align-items:center;gap:5px;color:var(--ink-3)}
+  .bar{height:3px;border-radius:99px;background:#EDEAE3;margin-top:6px;overflow:hidden}
+  .bar > i{display:block;height:100%;border-radius:99px;background:#C97F1D}
+  .link{font-size:11.5px;font-weight:600;color:var(--accent);text-decoration:none;border-bottom:1px solid var(--accent-tint-2)}
+
+  /* ---------- center ---------- */
+  .center{display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+  .thread-head{
+    height:56px;display:flex;align-items:center;gap:12px;padding:0 28px;
+    border-bottom:1px solid var(--line);background:rgba(255,255,255,.72);backdrop-filter:blur(6px);
+  }
+  .thread-title{font-size:14.5px;font-weight:650;letter-spacing:-.005em}
+  .thread-sub{font-size:12.5px;color:var(--ink-3)}
+  .scroll{flex:1;min-height:0;overflow:hidden;padding:26px 28px 4px;display:flex;flex-direction:column;justify-content:flex-end;gap:22px}
+  .wrap{max-width:720px;width:100%;margin:0 auto;display:flex;flex-direction:column;gap:22px}
+
+  .turn-user{display:flex;justify-content:flex-end}
+  .bubble{
+    max-width:78%;background:var(--surface);border:1px solid var(--line);
+    border-radius:14px 14px 4px 14px;padding:10px 14px;font-size:14.5px;color:var(--ink);
+    box-shadow:var(--shadow-sm);
+  }
+  .turn-ai{display:flex;gap:12px}
+  .ai-mark{
+    width:28px;height:28px;border-radius:9px;background:var(--accent-tint);border:1px solid var(--accent-tint-2);
+    display:grid;place-items:center;flex:none;margin-top:1px;
+  }
+  .ai-body{min-width:0;flex:1}
+  .ai-name{font-size:12px;font-weight:650;color:var(--ink-2);letter-spacing:.01em;display:flex;align-items:center;gap:8px}
+  .prose{font-size:15px;line-height:1.62;color:#1B2522;margin-top:7px}
+  .prose p + p{margin-top:11px}
+  .prose strong{font-weight:650;color:var(--ink)}
+  .amount{
+    font-weight:650;background:var(--accent-tint);border-radius:5px;padding:0 2px;
+    box-shadow:inset 0 -1px 0 var(--accent-tint-2);
+  }
+  cite.c{
+    display:inline-flex;align-items:center;justify-content:center;
+    min-width:17px;height:17px;padding:0 4px;margin-left:3px;border-radius:5px;
+    background:var(--accent-tint);border:1px solid var(--accent-tint-2);
+    font-size:10.5px;font-weight:700;font-style:normal;color:#0C4A3C;
+    vertical-align:2px;line-height:1;
+  }
+  cite.c.on{background:var(--accent);border-color:var(--accent);color:#fff}
+
+  .ctx{
+    display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:#2E6B5A;
+    background:var(--accent-tint);border:1px solid var(--accent-tint-2);border-radius:999px;
+    padding:2px 9px;font-weight:600;
+  }
+
+  .datatable{
+    margin-top:12px;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface);
+  }
+  .datatable table{width:100%;border-collapse:collapse;font-size:13.5px}
+  .datatable th{
+    text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#6E7875;
+    background:var(--surface-2);padding:8px 12px;border-bottom:1px solid var(--line-soft);font-weight:650;
+  }
+  .datatable td{padding:9px 12px;border-bottom:1px solid var(--line-soft);color:var(--ink-2)}
+  .datatable tr:last-child td{border-bottom:0}
+  .datatable td:first-child{font-weight:600;color:var(--ink)}
+
+  .note{
+    margin-top:12px;display:flex;gap:9px;padding:10px 12px;border-radius:10px;
+    background:var(--amber-tint);border:1px solid #F0DFC2;font-size:13px;color:#7C4A08;line-height:1.5;
+  }
+
+  .aftercite{
+    margin-top:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  }
+  .srcbtn{
+    display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 11px;border-radius:9px;
+    border:1px solid var(--line);background:var(--surface);font-size:12.5px;font-weight:600;color:var(--ink-2);
+    box-shadow:var(--shadow-sm);cursor:pointer;
+  }
+  .srcbtn .n{
+    font-variant-numeric:tabular-nums;color:var(--ink-3);font-weight:650;
+  }
+  .srcbtn.open{
+    background:var(--accent-tint);border-color:#BCD3CA;color:#0C4A3C;
+    box-shadow:0 0 0 3px rgba(14,90,72,.07);
+  }
+  .srcbtn.open .n{color:#2E6B5A}
+  .pill{
+    display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:8px;
+    border:1px solid var(--line);background:var(--surface);font-size:12.5px;color:var(--ink-2);font-weight:550;
+  }
+  .pill.good{background:var(--accent-tint);border-color:var(--accent-tint-2);color:#0C4A3C;font-weight:600}
+  .actions{display:flex;gap:2px;margin-left:auto}
+  .act{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;color:var(--ink-3)}
+
+  /* composer */
+  .composer-zone{padding:10px 28px 18px;background:linear-gradient(to top,var(--bg) 62%,rgba(246,245,242,0))}
+  .suggests{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+  .sugg{
+    height:30px;padding:0 11px;border-radius:999px;border:1px solid var(--line);background:var(--surface);
+    font-size:12.5px;color:var(--ink-2);display:inline-flex;align-items:center;gap:6px;box-shadow:var(--shadow-sm);
+  }
+  .composer{
+    background:var(--surface);border:1px solid #D9D5CC;border-radius:16px;box-shadow:var(--shadow-md);
+    outline:3px solid rgba(14,90,72,.10);
+  }
+  .composer .ta{
+    padding:14px 16px 6px;font-size:14.5px;color:var(--ink);min-height:52px;
+  }
+  .caret{display:inline-block;width:1.5px;height:17px;background:var(--accent);vertical-align:-3px;margin-left:1px}
+  .placeholder{color:#9AA29F}
+  .composer-foot{
+    display:flex;align-items:center;gap:8px;padding:8px 10px 10px 12px;
+  }
+  .toggle{
+    display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 10px 0 8px;border-radius:999px;
+    background:var(--accent-tint);border:1px solid var(--accent-tint-2);font-size:12.5px;font-weight:600;color:#0C4A3C;
+  }
+  .switch{width:26px;height:16px;border-radius:99px;background:var(--accent);position:relative;flex:none}
+  .switch i{position:absolute;top:2px;left:12px;width:12px;height:12px;border-radius:99px;background:#fff}
+  .kbd{
+    font-size:11px;color:var(--ink-3);border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;
+    padding:1px 5px;background:var(--surface-2);
+  }
+  .send{
+    height:34px;padding:0 14px;border-radius:10px;background:var(--accent);color:#fff;
+    font-size:13.5px;font-weight:650;display:inline-flex;align-items:center;gap:7px;box-shadow:0 1px 2px rgba(14,90,72,.3);
+  }
+  .disclaimer{
+    margin-top:9px;font-size:11.5px;color:#8A9390;display:flex;align-items:center;gap:6px;justify-content:center;
+  }
+
+  /* ---------- right panel ---------- */
+  .panel{background:var(--surface);border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+  .panel-head{padding:14px 18px 12px;border-bottom:1px solid var(--line)}
+  .panel-title{font-size:13.5px;font-weight:650;display:flex;align-items:center;gap:8px}
+  .panel-sub{font-size:12px;color:var(--ink-3);margin-top:3px}
+  .tabs{display:flex;gap:4px;margin-top:11px;background:var(--surface-2);border:1px solid var(--line-soft);padding:3px;border-radius:9px}
+  .tab{flex:1;height:26px;border-radius:7px;display:grid;place-items:center;font-size:12.5px;font-weight:600;color:var(--ink-3)}
+  .tab.active{background:var(--surface);color:var(--ink);box-shadow:var(--shadow-sm);border:1px solid var(--line-soft)}
+  .panel-body{flex:1;min-height:0;overflow:hidden;padding:14px 18px 16px;display:flex;flex-direction:column;gap:12px}
+
+  .src{border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden}
+  .src.active{border-color:#BCD3CA;box-shadow:0 0 0 3px rgba(14,90,72,.07)}
+  .src-head{display:flex;gap:9px;padding:11px 12px;align-items:flex-start}
+  .num{
+    width:19px;height:19px;border-radius:6px;background:var(--accent);color:#fff;flex:none;
+    display:grid;place-items:center;font-size:11px;font-weight:700;margin-top:1px;
+  }
+  .src .dt{font-size:13px;font-weight:650;line-height:1.35}
+  .src .dm{font-size:11.5px;color:var(--ink-3);margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .page{
+    display:inline-flex;align-items:center;gap:4px;background:var(--surface-2);border:1px solid var(--line);
+    border-radius:6px;padding:1px 6px;font-size:11px;font-weight:650;color:var(--ink-2);
+  }
+  .quote{
+    margin:0 12px 10px;padding:10px 12px;background:var(--surface-2);border:1px solid var(--line-soft);
+    border-left:2.5px solid var(--accent);border-radius:0 8px 8px 0;
+    font-size:12.5px;line-height:1.6;color:#2A3431;
+  }
+  .quote mark{background:#FBEFC2;padding:0 2px;border-radius:3px;color:#2A3431}
+  .src-foot{
+    display:flex;align-items:center;gap:8px;padding:0 12px 11px;
+  }
+  .verified{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:#0C4A3C}
+  .mini{
+    height:28px;padding:0 10px;border-radius:8px;border:1px solid var(--line);background:var(--surface);
+    font-size:12px;font-weight:600;color:var(--ink-2);display:inline-flex;align-items:center;gap:6px;margin-left:auto;
+  }
+
+  .preview{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface-2)}
+  .preview-head{display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--line-soft);font-size:11.5px;color:var(--ink-2);font-weight:600}
+  .sheet{background:#fff;margin:11px;border:1px solid var(--line);border-radius:6px;padding:12px 13px;box-shadow:var(--shadow-sm)}
+  .sheet .h{font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#7C8683}
+  .ln{height:5px;border-radius:99px;background:#E9E6DF;margin-top:7px}
+  .ln.s{width:62%}.ln.m{width:86%}.ln.l{width:97%}
+  .hl{background:#FBEFC2;box-shadow:0 0 0 2px #FBEFC2}
+  .sheet-cap{font-size:10.5px;color:var(--ink-3);padding:0 11px 10px;display:flex;align-items:center;gap:5px}
+
+  .trace{border:1px solid var(--line);border-radius:12px;background:var(--surface-2);margin-top:auto}
+  .trace-row{display:flex;align-items:center;gap:9px;padding:11px 12px;font-size:12.5px;font-weight:600;color:var(--ink-2)}
+  .trace-row .st{margin-left:auto;font-size:11.5px;font-weight:550;color:var(--ink-3);display:flex;align-items:center;gap:5px}
+  .trace-list{padding:0 12px 11px;display:flex;flex-direction:column;gap:7px}
+  .step{display:flex;gap:8px;align-items:center;font-size:11.5px;color:var(--ink-3)}
+  .step .k{color:var(--ink-2);font-weight:600}
+  .tick{width:14px;height:14px;border-radius:99px;background:var(--accent-tint);display:grid;place-items:center;flex:none}
+</style>
+</head>
+<body>
+
+<!-- ============ TOP BAR ============ -->
+<div class="topbar">
+  <div class="brand">
+    <div class="logo">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H13l5 5v11.5A1.5 1.5 0 0 1 16.5 21h-11A1.5 1.5 0 0 1 4 19.5z"/>
+        <path d="M13 3v5h5"/><circle cx="10.5" cy="13.5" r="2.6"/><path d="M12.6 15.6 15 18"/>
+      </svg>
+    </div>
+    <div>
+      <div class="brand-name">Info Retriever</div>
+    </div>
+  </div>
+  <div class="divider-v"></div>
+  <div class="brand-sub">Tuyet’s paperwork · 12 documents · 148 pages indexed</div>
+  <div class="spacer"></div>
+  <div class="chip">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2" stroke-linecap="round"><rect x="4" y="10.5" width="16" height="10.5" rx="2.2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
+    Stays on this Mac
+  </div>
+  <div class="chip">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 5.6L20 10.5l-4.4 3.5.9 6-4.5-3.1L7.5 20l.9-6L4 10.5l5.8-1.9z"/></svg>
+    Claude Opus 5
+  </div>
+  <div class="divider-v"></div>
+  <div class="avatar">TN</div>
+</div>
+
+<div class="shell">
+
+  <!-- ============ LEFT RAIL ============ -->
+  <aside class="rail">
+    <button class="btn btn-primary btn-block">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="M7.5 8.5 12 4l4.5 4.5"/><path d="M4.5 15v3.5A2 2 0 0 0 6.5 20.5h11a2 2 0 0 0 2-2V15"/></svg>
+      Add documents
+    </button>
+    <div class="drop">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8A9391" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v3.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 18.5V15"/><path d="M7.5 9.5 12 5l4.5 4.5"/><path d="M12 5v11"/></svg>
+      <span>or drop files here — PDF, DOCX, JPG, PNG, TXT</span>
+    </div>
+
+    <nav class="nav">
+      <div class="navlabel">Workspace</div>
+      <div class="navitem active">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0C4A3C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5a2.5 2.5 0 0 1-2.5 2.5H8l-4 3.5V6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5z"/></svg>
+        Ask your documents
+      </div>
+      <div class="navitem">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H13l5 5v11.5A1.5 1.5 0 0 1 16.5 21h-10A1.5 1.5 0 0 1 5 19.5z"/><path d="M13 3v5h5"/></svg>
+        Documents
+        <span class="count">12</span>
+      </div>
+    </nav>
+
+    <div class="section-head">
+      <div class="navlabel">Conversations</div>
+      <div class="iconbtn" title="New conversation">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2.3" stroke-linecap="round"><path d="M12 5.5v13M5.5 12h13"/></svg>
+      </div>
+    </div>
+    <div>
+      <div class="convo active">
+        <div class="t">Riverside Ave lease — rent &amp; deposit</div>
+        <div class="m"><span>4 questions</span><span class="dot"></span><span>Just now</span></div>
+      </div>
+      <div class="convo">
+        <div class="t">Notice period if I leave early</div>
+        <div class="m"><span>2 questions</span><span class="dot"></span><span>Yesterday</span></div>
+      </div>
+      <div class="convo">
+        <div class="t">Does my policy cover dental?</div>
+        <div class="m"><span>6 questions</span><span class="dot"></span><span>28 Aug</span></div>
+      </div>
+      <div class="convo">
+        <div class="t">Employment contract — bonus terms</div>
+        <div class="m"><span>3 questions</span><span class="dot"></span><span>19 Aug</span></div>
+      </div>
+    </div>
+
+    <!-- upload tray: progress + success + error states -->
+    <div class="tray">
+      <div class="tray-head">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#141D1A" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="M7.5 8.5 12 4l4.5 4.5"/><path d="M4.5 15v3.5A2 2 0 0 0 6.5 20.5h11a2 2 0 0 0 2-2V15"/></svg>
+        Adding 3 files
+        <span class="st">2 of 3 done</span>
+      </div>
+
+      <div class="frow">
+        <div class="fico" style="background:var(--accent-tint)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#0E5A48" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.8 9.5 17 19 7.5"/></svg>
+        </div>
+        <div style="min-width:0;flex:1">
+          <div class="fname">Lease_14_Riverside_Ave.pdf</div>
+          <div class="fmeta"><span style="color:#0C4A3C;font-weight:600">Indexed</span><span class="dot"></span><span>12 pages · 34 chunks</span></div>
+        </div>
+      </div>
+
+      <div class="frow">
+        <div class="fico" style="background:var(--amber-tint)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9A5B08" stroke-width="2.4" stroke-linecap="round"><path d="M12 4.5a7.5 7.5 0 1 1-5.3 2.2"/><path d="M6.7 3v3.7h3.7"/></svg>
+        </div>
+        <div style="min-width:0;flex:1">
+          <div class="fname">Allianz_health_policy_scan.pdf</div>
+          <div class="fmeta"><span style="color:#9A5B08;font-weight:600">Reading text (OCR)</span><span class="dot"></span><span>page 7 of 11</span></div>
+          <div class="bar"><i style="width:64%"></i></div>
+        </div>
+      </div>
+
+      <div class="frow">
+        <div class="fico" style="background:var(--red-tint)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#A8321F" stroke-width="2.6" stroke-linecap="round"><path d="M12 7.5v6.2"/><path d="M12 17h.01"/></svg>
+        </div>
+        <div style="min-width:0;flex:1">
+          <div class="fname">household_budget.xlsx</div>
+          <div class="fmeta" style="color:#A8321F"><span style="font-weight:600">Spreadsheets not supported</span></div>
+          <div class="fmeta" style="margin-top:5px;gap:10px">
+            <a class="link" href="#">Export as PDF instead</a>
+            <a class="link" href="#" style="color:#78827F;border-color:var(--line)">Dismiss</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ CENTER: CONVERSATION ============ -->
+  <main class="center">
+    <div class="thread-head">
+      <div>
+        <div class="thread-title">Riverside Ave lease — rent &amp; deposit</div>
+      </div>
+      <div class="chip" style="height:26px;font-size:12px">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+        Searching all 12 documents
+      </div>
+      <div class="spacer"></div>
+      <div class="pill">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        New conversation
+      </div>
+      <div class="act" title="More">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="#78827F"><circle cx="12" cy="5.5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="18.5" r="1.6"/></svg>
+      </div>
+    </div>
+
+    <div class="scroll">
+      <div class="wrap">
+
+        <!-- turn 1 -->
+        <div class="turn-user"><div class="bubble">What is the monthly rent?</div></div>
+
+        <div class="turn-ai">
+          <div class="ai-mark">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0E5A48" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 5.6L20 10.5l-4.4 3.5.9 6-4.5-3.1L7.5 20l.9-6L4 10.5l5.8-1.9z"/></svg>
+          </div>
+          <div class="ai-body">
+            <div class="ai-name">Answer</div>
+            <div class="prose">
+              <p>The monthly rent is <span class="amount">$2,500.00</span>, due on the first day of each calendar month.<cite class="c">1</cite> A late fee of $75 applies if rent is not received within five days of the due date.<cite class="c">2</cite></p>
+            </div>
+            <div class="aftercite">
+              <div class="srcbtn">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h4L11.5 6h7A1.5 1.5 0 0 1 20 7.5v11A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5z"/></svg>
+                Sources <span class="n">2</span>
+              </div>
+              <div class="srcbtn">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 7.5 5 12l4.5 4.5"/><path d="M14.5 7.5 19 12l-4.5 4.5"/></svg>
+                Agent tool calls <span class="n">2</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- turn 2 (follow-up, keeps context) -->
+        <div class="turn-user"><div class="bubble">And the deposit?</div></div>
+
+        <div class="turn-ai">
+          <div class="ai-mark">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0E5A48" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 5.6L20 10.5l-4.4 3.5.9 6-4.5-3.1L7.5 20l.9-6L4 10.5l5.8-1.9z"/></svg>
+          </div>
+          <div class="ai-body">
+            <div class="ai-name">
+              Answer
+              <span class="ctx">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#2E6B5A" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 15.5 4.5 10.5 9.5 5.5"/><path d="M4.5 10.5h9A6 6 0 0 1 19.5 16.5v2"/></svg>
+                Continuing about your Riverside Ave lease
+              </span>
+            </div>
+            <div class="prose">
+              <p>The security deposit is <span class="amount">$5,000.00</span> — two months’ rent — payable in full before the tenancy begins on 1 March 2026.<cite class="c on">1</cite> It is held in a separate escrow account and returned within <strong>30 days</strong> of move-out, less any documented damage beyond normal wear and tear.<cite class="c">2</cite></p>
+
+              <div class="datatable">
+                <table>
+                  <thead><tr><th>Payment due before move-in</th><th>Amount</th><th>Source</th></tr></thead>
+                  <tbody>
+                    <tr><td>First month’s rent</td><td>$2,500.00</td><td>p.2 · §3.1</td></tr>
+                    <tr><td>Security deposit</td><td>$5,000.00</td><td>p.3 · §4.2</td></tr>
+                    <tr><td>Total</td><td>$7,500.00</td><td>calculated</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="note">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9A5B08" stroke-width="2.1" stroke-linecap="round" style="flex:none;margin-top:1px"><circle cx="12" cy="12" r="8.5"/><path d="M12 8.2v4.6M12 16h.01"/></svg>
+                <span>The lease does not state whether interest accrues on the deposit, so I can’t answer that from your documents.</span>
+              </div>
+            </div>
+
+            <div class="aftercite">
+              <div class="srcbtn open">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0C4A3C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h4L11.5 6h7A1.5 1.5 0 0 1 20 7.5v11A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5z"/></svg>
+                Sources <span class="n">2</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#0C4A3C" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="margin-left:1px"><path d="M10 7l5 5-5 5"/></svg>
+              </div>
+              <div class="srcbtn">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 7.5 5 12l4.5 4.5"/><path d="M14.5 7.5 19 12l-4.5 4.5"/></svg>
+                Agent tool calls <span class="n">3</span>
+              </div>
+              <div class="actions">
+                <div class="act" title="Copy"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#78827F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2.2"/><path d="M15 5.5A1.5 1.5 0 0 0 13.5 4h-8A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15"/></svg></div>
+                <div class="act" title="Helpful"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#78827F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 21V10l4-6.5a2 2 0 0 1 2.9 2.6L12.5 9.5h5A2.4 2.4 0 0 1 19.8 12.4l-1.3 6A2.4 2.4 0 0 1 16.1 20.3H7z"/></svg></div>
+                <div class="act" title="Not helpful"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#78827F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3v11l-4 6.5a2 2 0 0 1-2.9-2.6l1.4-3.4h-5A2.4 2.4 0 0 1 4.2 11.6l1.3-6A2.4 2.4 0 0 1 7.9 3.7H17z"/></svg></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- composer -->
+    <div class="composer-zone">
+      <div class="wrap" style="gap:0">
+        <div class="suggests">
+          <span style="font-size:11.5px;color:#8A9390;align-self:center;margin-right:2px">Try next</span>
+          <div class="sugg">Is the deposit refundable?</div>
+          <div class="sugg">What is my notice period?</div>
+          <div class="sugg">When does the lease expire?</div>
+        </div>
+
+        <div class="composer">
+          <div class="ta">
+            <span class="placeholder">Ask a follow-up about your documents…</span><span class="caret"></span>
+          </div>
+          <div class="composer-foot">
+            <div class="act" title="Attach a document">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#78827F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.5l-7.8 7.8a4.5 4.5 0 0 1-6.4-6.4l7.4-7.4a3 3 0 0 1 4.3 4.3l-7.4 7.4a1.5 1.5 0 0 1-2.2-2.2l6.7-6.7"/></svg>
+            </div>
+            <div class="pill" style="height:30px">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+              Inspect retrieval
+            </div>
+            <div class="spacer"></div>
+            <span class="kbd">↵</span>
+            <span style="font-size:11.5px;color:#8A9390;margin-right:4px">to send</span>
+            <div class="send">
+              Ask
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13"/><path d="M12.5 5.5 19 12l-6.5 6.5"/></svg>
+            </div>
+          </div>
+        </div>
+        <div class="disclaimer">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8A9390" stroke-width="2" stroke-linecap="round"><rect x="4" y="10.5" width="16" height="10.5" rx="2.2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
+          Answers come only from documents you added. An index into your paperwork — not legal advice.
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ============ RIGHT: SOURCES & VERIFY ============ -->
+  <aside class="panel">
+    <div class="panel-head">
+      <div class="panel-title">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#141D1A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h4L11.5 6h7A1.5 1.5 0 0 1 20 7.5v11A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5z"/></svg>
+        Where this answer came from
+        <div class="act" style="margin-left:auto" title="Close panel">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#78827F" stroke-width="2.2" stroke-linecap="round"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+        </div>
+      </div>
+      <div class="panel-sub">For “And the deposit?” · 2 quotes verified word-for-word</div>
+      <div class="tabs">
+        <div class="tab active">Sources (2)</div>
+        <div class="tab">Agent tool calls (3)</div>
+      </div>
+    </div>
+
+    <div class="panel-body">
+
+      <div class="src active">
+        <div class="src-head">
+          <div class="num">1</div>
+          <div style="min-width:0">
+            <div class="dt">Residential Lease Agreement — 14 Riverside Ave</div>
+            <div class="dm">
+              <span class="page">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2.2"><path d="M6 3.5h8l4.5 4.5v12.5H6z"/></svg>
+                Page 3
+              </span>
+              <span>§4.2 Security Deposit</span><span class="dot"></span><span>PDF</span>
+            </div>
+          </div>
+        </div>
+        <div class="quote">“Tenant shall pay to Landlord a security deposit in the amount of <mark>Five Thousand Dollars ($5,000.00)</mark>, being equal to two (2) months’ Rent, in full prior to the Commencement Date.”</div>
+        <div class="src-foot">
+          <span class="verified">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#0C4A3C" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.8 9.5 17 19 7.5"/></svg>
+            Exact match in source
+          </span>
+          <div class="mini">
+            Open page 3
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 5.5H19V11"/><path d="M19 5.5 11 13.5"/><path d="M18 15v3.5A1.5 1.5 0 0 1 16.5 20h-10A1.5 1.5 0 0 1 5 18.5v-10A1.5 1.5 0 0 1 6.5 7H10"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="src">
+        <div class="src-head">
+          <div class="num" style="background:#5E6E69">2</div>
+          <div style="min-width:0">
+            <div class="dt">Residential Lease Agreement — 14 Riverside Ave</div>
+            <div class="dm">
+              <span class="page">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2.2"><path d="M6 3.5h8l4.5 4.5v12.5H6z"/></svg>
+                Page 4
+              </span>
+              <span>§4.5 Return of Deposit</span><span class="dot"></span><span>PDF</span>
+            </div>
+          </div>
+        </div>
+        <div class="quote" style="border-left-color:#5E6E69">“Landlord shall return the deposit, less any lawful deductions for damage beyond normal wear and tear, within <mark>thirty (30) days</mark> after Tenant vacates the Premises. The deposit shall be held in a segregated escrow account.”</div>
+        <div class="src-foot">
+          <span class="verified">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#0C4A3C" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.8 9.5 17 19 7.5"/></svg>
+            Exact match in source
+          </span>
+          <div class="mini">
+            Open page 4
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 5.5H19V11"/><path d="M19 5.5 11 13.5"/><path d="M18 15v3.5A1.5 1.5 0 0 1 16.5 20h-10A1.5 1.5 0 0 1 5 18.5v-10A1.5 1.5 0 0 1 6.5 7H10"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="preview" style="flex:1;display:flex;flex-direction:column;min-height:0">
+        <div class="preview-head">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4E5956" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+          Source 1 in context — page 3 of 12
+        </div>
+        <div class="sheet" style="flex:1">
+          <div class="h">Article 4 — Security Deposit</div>
+          <div class="ln l"></div>
+          <div class="ln m"></div>
+          <div class="ln l hl"></div>
+          <div class="ln m hl"></div>
+          <div class="ln s"></div>
+          <div class="ln l"></div>
+          <div class="ln m"></div>
+          <div class="ln l"></div>
+          <div class="ln s"></div>
+          <div class="h" style="margin-top:16px">4.5 — Return of Deposit</div>
+          <div class="ln l"></div>
+          <div class="ln m"></div>
+          <div class="ln l"></div>
+          <div class="ln s"></div>
+        </div>
+        <div class="sheet-cap">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#78827F" stroke-width="2.2" stroke-linecap="round"><path d="M12 8.2v4.6M12 16h.01"/><circle cx="12" cy="12" r="8.5"/></svg>
+          Highlighted lines are the quoted text, shown exactly as it appears in your file.
+        </div>
+      </div>
+
+    </div>
+  </aside>
+</div>
+
+</body>
+</html>

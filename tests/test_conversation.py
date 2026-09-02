@@ -338,3 +338,68 @@ def test_history_is_capped_by_configuration(conversation_env, monkeypatch):
     assert [c for r, c in rendered if r == "user"] == ["two?", "three?"]
 
     settings.cache_clear()
+
+
+# --------------------------------------------------------------------------- #
+# citation provenance
+# --------------------------------------------------------------------------- #
+
+
+def test_citations_gain_the_document_id_and_clause_heading(conversation_env, monkeypatch):
+    """A provider reports a citation against a document *title* — that is all the
+    citation pass was given. A title cannot be opened, so `agent.ask` resolves the id
+    from the documents it actually re-sent, and looks up the clause heading on that
+    page. Without the id the Sources panel has nothing to open."""
+    agent, db, provider = conversation_env
+    doc_id = _seed_document(db)
+
+    from info_retriever.llm.base import CitedResult
+
+    monkeypatch.setattr(
+        provider,
+        "cite",
+        lambda **kwargs: CitedResult(
+            text="cited answer",
+            citations=[
+                {
+                    "document_title": "Lease — 12 Rose St",
+                    "cited_text": "Rent is 1500 USD per month.",
+                    "page": 1,
+                    "located": True,
+                }
+            ],
+        ),
+    )
+
+    answer = agent.ask("what is the rent?")
+    citation = answer.citations[0]
+    assert citation["document_id"] == doc_id
+    # The heading comes off the chunk that page was indexed from.
+    assert citation["heading"] == "3. RENT"
+
+    # It survives into storage, so a reopened conversation can still open the source.
+    stored = db.conversation_turns(answer.conversation_id)[0]["citations"][0]
+    assert stored["document_id"] == doc_id
+
+
+def test_an_unlocatable_quote_gets_no_document_to_open(conversation_env, monkeypatch):
+    """`located: False` means the quote was not found in any source. Inventing a
+    document id for it would offer to "open" a page that does not contain it."""
+    agent, db, provider = conversation_env
+    _seed_document(db)
+
+    from info_retriever.llm.base import CitedResult
+
+    monkeypatch.setattr(
+        provider,
+        "cite",
+        lambda **kwargs: CitedResult(
+            text="cited answer",
+            citations=[{"cited_text": "paraphrased wording", "located": False}],
+        ),
+    )
+
+    citation = agent.ask("what is the rent?").citations[0]
+    assert citation["located"] is False
+    assert "document_id" not in citation
+    assert "heading" not in citation

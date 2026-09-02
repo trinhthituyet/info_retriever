@@ -44,6 +44,7 @@ __all__ = [
     "list_conversations",
     "list_documents",
     "normalise_date",
+    "page_view",
     "query_documents",
     "reset_backend",
     "session",
@@ -254,6 +255,45 @@ def document_page_text(
     return "\n\n".join(row["content"] for row in rows)
 
 
+def page_view(document_id: str, *, page: int | None = None) -> dict[str, Any]:
+    """One page of a document as stored, with the headings that fall on it.
+
+    This is what the Sources panel shows a quote *in context*: the surrounding text,
+    exactly as indexed, so the highlighted span can be seen where it actually sits.
+
+    ``page=None`` selects the chunks that carry no page number at all, which is what
+    a DOCX or plain-text ingest produces — the caller gets the whole body rather than
+    an empty result it cannot distinguish from a missing page.
+    """
+    engine = backend()
+    with engine.session() as conn:
+        rows = _rows(
+            engine.execute(
+                conn,
+                """
+                select page, heading, content from chunks
+                where document_id = ?
+                  and ((? is null and page is null) or page = ?)
+                order by ordinal
+                """,
+                (document_id, page, page),
+            )
+        )
+
+    headings: list[str] = []
+    for row in rows:
+        heading = (row["heading"] or "").strip()
+        # Consecutive chunks under one heading repeat it; keep the sequence, not dupes.
+        if heading and heading not in headings:
+            headings.append(heading)
+
+    return {
+        "page": page,
+        "headings": headings,
+        "text": "\n\n".join(row["content"] for row in rows) if rows else None,
+    }
+
+
 def query_documents(
     *,
     doc_type: str | None = None,
@@ -329,7 +369,16 @@ def stats() -> dict[str, int]:
     with engine.session() as conn:
         docs = _one(engine.execute(conn, "select count(*) as n from documents"))
         chunks = _one(engine.execute(conn, "select count(*) as n from chunks"))
-    return {"documents": (docs or {}).get("n", 0), "chunks": (chunks or {}).get("n", 0)}
+        # Documents with no page count (text, DOCX) contribute nothing rather than
+        # making the total null.
+        pages = _one(
+            engine.execute(conn, "select coalesce(sum(page_count), 0) as n from documents")
+        )
+    return {
+        "documents": (docs or {}).get("n", 0),
+        "chunks": (chunks or {}).get("n", 0),
+        "pages": int((pages or {}).get("n", 0) or 0),
+    }
 
 
 # --------------------------------------------------------------------------- #

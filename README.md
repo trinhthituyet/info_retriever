@@ -162,9 +162,10 @@ has in front of it. Trimming is by turn count and character budget
 (`HISTORY_MAX_TURNS`, `HISTORY_MAX_CHARS`) and drops the *oldest* turns first, since a
 follow-up almost always refers to the most recent one.
 
-**Verify & cite** (on by default) runs the second Claude pass, which re-answers from
-the original documents and returns page references. Turning it off roughly halves
-cost and latency but gives no provenance.
+Every answer runs the second Claude pass, which re-answers from the original documents
+and returns page references. There is no toggle for it: the Sources panel is the reason
+to ask in the first place, so making it optional only offered a worse answer. Scripted
+callers can still pass `cite=false` to `/api/ask` for the cheaper single pass.
 
 Sources sit behind a collapsed **Sources (n)** disclosure under each answer — click
 the arrow to read the quoted wording and its page. One exception: if a quote could not

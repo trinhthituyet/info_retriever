@@ -291,6 +291,27 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Original file is missing from the blob store")
         return FileResponse(path, media_type=row["mime_type"], filename=row["original_name"])
 
+    @app.get("/api/documents/{document_id}/context")
+    def document_context(document_id: str, page: int | None = None) -> dict[str, Any]:
+        """One page of a document as indexed, for showing a quote in context.
+
+        Text, not pixels: this is the stored chunk text, which is what the citation
+        was located in. Rendering the PDF page itself would show a highlight that
+        cannot be guaranteed to sit over the same characters.
+        """
+        row = db.get_document(document_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="No such document")
+        view = db.page_view(document_id, page=page)
+        return {
+            "document_id": document_id,
+            "title": row["title"] or row["original_name"],
+            "page": view["page"],
+            "page_count": row["page_count"],
+            "headings": view["headings"],
+            "text": view["text"],
+        }
+
     @app.delete("/api/documents/{document_id}")
     def delete_document(document_id: str) -> dict[str, bool]:
         if not db.delete_document(document_id):

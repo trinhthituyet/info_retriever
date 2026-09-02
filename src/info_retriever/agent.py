@@ -17,7 +17,7 @@ Two passes, for a specific reason:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from . import db, llm
 from .config import settings
@@ -152,6 +152,43 @@ def _documents_consulted(
     return seen[:MAX_CITED_DOCUMENTS]
 
 
+def _annotate_citations(
+    citations: Sequence[Mapping[str, Any]], documents: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Add ``document_id`` and the clause ``heading`` to each citation.
+
+    Providers report a citation against a document *title* — that is what the
+    Anthropic API returns and all the citation pass was given. A title cannot be
+    opened, so the UI needs the id to show the quote in context; it is resolved here,
+    where the documents that were actually re-sent are already in hand, rather than in
+    each provider.
+
+    An unlocatable quote keeps ``located: False`` and gains nothing: with no page and
+    no matching title there is no context to open, which is the honest outcome.
+    """
+    ids_by_title: dict[str, str] = {}
+    for row in documents:
+        title = row.get("title") or row.get("original_name")
+        if title:
+            ids_by_title.setdefault(str(title), str(row["id"]))
+
+    annotated: list[dict[str, Any]] = []
+    for citation in citations:
+        entry = dict(citation)
+        document_id = entry.get("document_id") or ids_by_title.get(
+            str(entry.get("document_title") or "")
+        )
+        if document_id:
+            entry["document_id"] = document_id
+            page = entry.get("page")
+            if page is not None:
+                headings = db.page_view(document_id, page=int(page))["headings"]
+                if headings:
+                    entry["heading"] = headings[0]
+        annotated.append(entry)
+    return annotated
+
+
 def _plan(question: str, emit: Emit) -> QueryPlan:
     """Normalise the question for retrieval, falling back to using it as-is.
 
@@ -276,7 +313,7 @@ def ask(
             emit=send,
         )
         text = cited.text or result.text
-        citations = cited.citations
+        citations = _annotate_citations(cited.citations, rows)
         documents_used = [
             {"id": row["id"], "title": row["title"] or row["original_name"]} for row in rows
         ]

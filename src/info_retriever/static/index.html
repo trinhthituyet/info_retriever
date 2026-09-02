@@ -3,89 +3,234 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>info-retriever</title>
+<meta name="application-name" content="info-retriever">
+<title>Info Retriever</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
+<!-- ------------------------------------------------------------------ topbar -->
 <header class="topbar">
-  <h1>info&#8209;retriever</h1>
-  <p class="tagline">Ask questions about your own contracts.</p>
-  <div class="meta" id="meta"></div>
+  <div class="brand">
+    <span class="logo" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H13l5 5v11.5A1.5 1.5 0 0 1 16.5 21h-11A1.5 1.5 0 0 1 4 19.5z"/>
+        <path d="M13 3v5h5"/><circle cx="10.5" cy="13.5" r="2.6"/><path d="M12.6 15.6 15 18"/>
+      </svg>
+    </span>
+    <h1 class="brand-name">Info Retriever</h1>
+  </div>
+  <span class="divider-v" aria-hidden="true"></span>
+  <p class="brand-sub" id="meta">Reading your index&hellip;</p>
+  <span class="spacer"></span>
+  <span class="chip">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" aria-hidden="true">
+      <rect x="4" y="10.5" width="16" height="10.5" rx="2.2"/>
+      <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
+    </svg>
+    Stays on this Mac
+  </span>
+  <span class="chip" id="model-chip"></span>
 </header>
 
-<main class="layout">
+<div class="shell" id="shell">
 
-  <!-- ------------------------------------------------ documents -->
-  <aside class="panel documents">
-    <div class="dropzone" id="dropzone" tabindex="0" role="button"
-         aria-label="Add documents">
-      <svg viewBox="0 0 24 24" aria-hidden="true" class="dz-icon">
-        <path d="M12 16V4m0 0L8 8m4-4 4 4" fill="none" stroke="currentColor"
-              stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none"
-              stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  <!-- ------------------------------------------------------------------ rail -->
+  <aside class="rail">
+    <button type="button" class="btn btn-primary btn-block" id="add-documents">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 16V4"/><path d="M7.5 8.5 12 4l4.5 4.5"/>
+        <path d="M4.5 15v3.5A2 2 0 0 0 6.5 20.5h11a2 2 0 0 0 2-2V15"/>
       </svg>
-      <strong>Add documents</strong>
-      <span>Drop files here, or click to choose</span>
-      <span class="hint">PDF &middot; DOCX &middot; PNG/JPG &middot; TXT</span>
+      Add documents
+    </button>
+    <div class="drop" id="dropzone">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 15v3.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 18.5V15"/>
+        <path d="M7.5 9.5 12 5l4.5 4.5"/><path d="M12 5v11"/>
+      </svg>
+      <span>or drop files here &mdash; PDF, DOCX, JPG, PNG, TXT</span>
       <input type="file" id="file-input" multiple hidden
              accept=".pdf,.docx,.png,.jpg,.jpeg,.gif,.webp,.txt,.md">
     </div>
 
-    <ul class="ingest-log" id="ingest-log" aria-live="polite"></ul>
+    <nav class="nav" aria-label="Workspace">
+      <h2 class="navlabel">Workspace</h2>
+      <button type="button" class="navitem active" id="nav-ask" aria-pressed="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 14.5a2.5 2.5 0 0 1-2.5 2.5H8l-4 3.5V6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5z"/>
+        </svg>
+        Ask your documents
+      </button>
+      <button type="button" class="navitem" id="nav-documents" aria-pressed="false">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H13l5 5v11.5A1.5 1.5 0 0 1 16.5 21h-10A1.5 1.5 0 0 1 5 19.5z"/>
+          <path d="M13 3v5h5"/>
+        </svg>
+        Documents
+        <span class="count" id="doc-count">0</span>
+      </button>
+    </nav>
 
-    <div class="section-head">
-      <h2>Indexed</h2>
-      <span class="count" id="doc-count">0</span>
-    </div>
-    <ul class="doc-list" id="doc-list"></ul>
+    <!-- conversations view -->
+    <section class="rail-section" id="convo-section">
+      <div class="section-head">
+        <h2 class="navlabel">Conversations</h2>
+        <button type="button" class="iconbtn" id="new-conversation"
+                title="Start a new conversation" aria-label="Start a new conversation">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.3" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 5.5v13M5.5 12h13"/>
+          </svg>
+        </button>
+      </div>
+      <div class="convo-list" id="conversation-list"></div>
+    </section>
+
+    <!-- documents view -->
+    <section class="rail-section" id="doc-section" hidden>
+      <div class="section-head">
+        <h2 class="navlabel">Indexed documents</h2>
+      </div>
+      <ul class="doc-list" id="doc-list"></ul>
+    </section>
+
+    <!-- upload tray: one row per file, live -->
+    <section class="tray" id="ingest-tray" hidden aria-live="polite">
+      <div class="tray-head">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 16V4"/><path d="M7.5 8.5 12 4l4.5 4.5"/>
+          <path d="M4.5 15v3.5A2 2 0 0 0 6.5 20.5h11a2 2 0 0 0 2-2V15"/>
+        </svg>
+        <span id="tray-title">Adding files</span>
+        <span class="st" id="tray-status"></span>
+        <button type="button" class="tray-close" id="tray-dismiss"
+                title="Dismiss" aria-label="Dismiss">&times;</button>
+      </div>
+      <div id="ingest-log"></div>
+    </section>
   </aside>
 
-  <!-- ------------------------------------------------ ask -->
-  <section class="panel ask">
-    <div class="conversation-bar">
-      <label class="visually-hidden" for="conversation-picker">Conversation</label>
-      <select id="conversation-picker" aria-label="Conversation"></select>
-      <button type="button" id="new-conversation" title="Start a new conversation">New</button>
-      <button type="button" id="delete-conversation" class="icon-button"
-              title="Delete this conversation" aria-label="Delete this conversation">&times;</button>
+  <!-- ---------------------------------------------------------------- centre -->
+  <main class="center">
+    <div class="thread-head">
+      <h2 class="thread-title" id="thread-title">New conversation</h2>
+      <span class="chip small" id="thread-scope"></span>
+      <span class="spacer"></span>
+      <button type="button" class="pill" id="thread-new">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 5v14M5 12h14"/>
+        </svg>
+        New conversation
+      </button>
+      <button type="button" class="act" id="delete-conversation"
+              title="Delete this conversation" aria-label="Delete this conversation">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 7.5h14M9.5 7.5V5.5h5v2M7 7.5l.8 12h8.4l.8-12"/>
+        </svg>
+      </button>
     </div>
 
-    <div class="transcript" id="transcript" aria-live="polite">
-      <div class="empty-state" id="empty-state">
-        <p>Ask about your documents. Follow-up questions keep the context, so
-           &ldquo;and the deposit?&rdquo; works.</p>
-        <div class="examples" id="examples">
-          <button type="button">Which contracts expire in the next 6 months?</button>
-          <button type="button">What is my notice period?</button>
-          <button type="button">How much is my deposit and when is it returned?</button>
+    <div class="scroll" id="transcript" aria-live="polite">
+      <div class="wrap" id="thread">
+        <div class="empty-state" id="empty-state">
+          <h3>Ask about your documents.</h3>
+          <p>Follow-up questions keep their context, so &ldquo;and the deposit?&rdquo; works
+             after &ldquo;what is the rent?&rdquo;.</p>
+          <div class="examples" id="examples">
+            <button type="button">Which contracts expire in the next 6 months?</button>
+            <button type="button">What is my notice period?</button>
+            <button type="button">How much is my deposit and when is it returned?</button>
+          </div>
         </div>
       </div>
     </div>
 
-    <form id="ask-form" class="ask-form">
-      <textarea id="question" rows="2" placeholder="Ask a question, or a follow-up…"
-                aria-label="Your question"></textarea>
-      <div class="ask-controls">
-        <label class="toggle">
-          <input type="checkbox" id="cite" checked>
-          <span>Verify &amp; cite<small>2nd pass &mdash; slower, gives page refs</small></span>
-        </label>
-        <button type="button" id="inspect-button" class="secondary"
-                title="Show the raw retrieved passages with no model involved">Inspect retrieval</button>
-        <button type="submit" id="ask-button">Ask</button>
+    <div class="composer-zone">
+      <div class="wrap">
+        <form id="ask-form" class="composer">
+          <textarea id="question" rows="2" aria-label="Your question"
+                    placeholder="Ask a follow-up about your documents&hellip;"></textarea>
+          <div class="composer-foot">
+            <button type="button" class="act" id="attach-button"
+                    title="Add a document" aria-label="Add a document">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 11.5l-7.8 7.8a4.5 4.5 0 0 1-6.4-6.4l7.4-7.4a3 3 0 0 1 4.3 4.3l-7.4 7.4a1.5 1.5 0 0 1-2.2-2.2l6.7-6.7"/>
+              </svg>
+            </button>
+            <button type="button" class="pill" id="inspect-button"
+                    title="Show the ranked passages with no model in the loop">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/>
+              </svg>
+              Inspect retrieval
+            </button>
+            <span class="spacer"></span>
+            <span class="kbd" aria-hidden="true">&crarr;</span>
+            <span class="kbd-label">to send</span>
+            <button type="submit" class="send" id="ask-button">
+              Ask
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 12h13"/><path d="M12.5 5.5 19 12l-6.5 6.5"/>
+              </svg>
+            </button>
+          </div>
+        </form>
+        <p class="disclaimer">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <rect x="4" y="10.5" width="16" height="10.5" rx="2.2"/>
+            <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
+          </svg>
+          Answers come only from documents you added. An index into your paperwork &mdash;
+          not legal advice.
+        </p>
       </div>
-    </form>
+    </div>
+  </main>
 
-    <p class="disclaimer">
-      Answers come from your documents only. This is an index into your paperwork,
-      not legal advice.
-    </p>
-  </section>
-</main>
+  <!-- ----------------------------------------------------------- source panel -->
+  <aside class="panel" id="panel" hidden aria-label="Source in context">
+    <div class="panel-head">
+      <h2 class="panel-title">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h4L11.5 6h7A1.5 1.5 0 0 1 20 7.5v11A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5z"/>
+        </svg>
+        Where this answer came from
+        <button type="button" class="act" id="panel-close"
+                title="Close panel" aria-label="Close panel">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+            <path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>
+          </svg>
+        </button>
+      </h2>
+      <p class="panel-sub" id="panel-sub"></p>
+      <div class="tabs" id="panel-tabs" role="tablist">
+        <button type="button" class="tab active" id="tab-sources" role="tab"
+                aria-selected="true">Sources</button>
+        <button type="button" class="tab" id="tab-tools" role="tab"
+                aria-selected="false">Agent tool calls</button>
+      </div>
+    </div>
+    <div class="panel-body" id="panel-body"></div>
+  </aside>
+</div>
 
-<!-- ------------------------------------------------ document detail -->
+<!-- ------------------------------------------------------------ document detail -->
 <dialog id="detail">
   <header>
     <h3 id="detail-title"></h3>

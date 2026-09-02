@@ -251,7 +251,9 @@ def test_document_roundtrip(store):
     assert row["effective_date"] == "2024-01-01"
     assert row["end_date"] == "2026-01-01"
 
-    assert store.stats() == {"documents": 1, "chunks": 2}
+    # `pages` sums page_count across documents; both backends must coalesce a null
+    # sum to 0 rather than returning None.
+    assert store.stats() == {"documents": 1, "chunks": 2, "pages": 2}
     assert store.find_by_sha256("h1") is not None
     assert store.find_by_sha256("nope") is None
 
@@ -338,7 +340,7 @@ def test_delete_cascades_to_chunks_and_indexes(store):
     doc_id = _insert(store)
     assert store.delete_document(doc_id) is True
 
-    assert store.stats() == {"documents": 0, "chunks": 0}
+    assert store.stats() == {"documents": 0, "chunks": 0, "pages": 0}
     assert store.vector_search([1.0, 0.0, 0.0, 0.0], limit=5) == []
     assert store.keyword_search("notice", limit=5) == []
     assert store.delete_document(doc_id) is False

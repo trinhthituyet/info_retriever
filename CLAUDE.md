@@ -264,7 +264,61 @@ Rules that are easy to break:
 - **Ingestion is serialised** behind `web._ingest_lock`: SQLite tolerates one writer,
   and the embedding model is not worth loading twice.
 - **The frontend writes all model- and document-derived text with `textContent`,
-  never `innerHTML`.** Titles and cited text come from files we did not author.
+  never `innerHTML`.** Titles and cited text come from files we did not author. That
+  includes SVG: runtime icons are built with `createElementNS`, not markup strings.
+
+## The interface
+
+Three columns (`.shell`), from `docs/redesign/mockup.html`:
+
+- **Left rail** — add/drop documents, a nav that swaps the rail between the
+  conversation list and the indexed-document list, and an upload tray pinned to the
+  bottom with one live row per file.
+- **Centre** — thread header, transcript, composer. Enter sends, Shift+Enter breaks.
+  Under each answer sits a chip row: `Sources N`, `Agent tool calls N`, copy.
+- **Right panel** — *where this answer came from*, for one turn at a time, with a
+  segmented control over two tabs: the source cards, and the agent's tool calls.
+  Opening a card's "Open page N" swaps the Sources tab for that page in context, with
+  a way back. The panel is **not a column until it is opened**: `.shell.with-panel`
+  adds the third track, so the transcript has the full width the rest of the time.
+
+Consequences to respect:
+
+- **The evidence chips are buttons, not `<details>`.** What they reveal is in another
+  region, which is what `aria-expanded` + `aria-controls="panel"` describe; a
+  disclosure element would promise the content sits inside it. Clicking the chip that
+  is already showing closes the panel again.
+- **One turn's evidence at a time**, held in `activeEvidence` — the panel is a view
+  onto a selected turn, not a running log. `markChips()` is what keeps exactly one chip
+  in the `.open` state.
+- **An unlocatable quote must not be hidden behind a click.** Two things guarantee it:
+  the chip itself goes amber and says "N not found in source" *in the transcript*, and a
+  live answer carrying one opens the panel on Sources by itself. If you restructure
+  this, keep both — the chip covers a reloaded transcript, the auto-open covers the
+  live case.
+- **The panel renders stored chunk text, not a rendered PDF page.** The citation was
+  located in that text, so the `<mark>` is guaranteed to sit over the same characters;
+  a rasterised page would only look more authoritative. `GET
+  /api/documents/{id}/context?page=N` serves it, and `page` omitted means "the chunks
+  with no page number", which is what a DOCX or text ingest produces.
+- **`citationsBlock` is shared with Inspect retrieval**, which renders the same cards
+  under an `h3` in the transcript rather than in the panel — it belongs beside the query
+  it ran, and it is a diagnostic, not an answer's provenance.
+- **`agent._annotate_citations` adds `document_id` and `heading`.** A provider reports
+  a citation against a document *title* — that is all the citation pass was given, and
+  a title cannot be opened. Resolving it in `agent.ask`, where the re-sent documents
+  are already in hand, keeps both providers free of it. An unlocatable quote gets
+  neither field, so no "Open page N" is offered for a quote that was never found.
+- **`.amount` is applied by us, not by the model.** `FIGURE` in `app.js` tints a bold
+  run only when it is *purely* a figure, so `**30 days**` and `**payment cycle**` stay
+  plain bold. Widening it would start highlighting emphasis.
+- **The mockup's `.toggle`/`.switch` rules are dead** — they styled the removed
+  "cite exact wording & page" control, and `test_the_ui_always_requests_citations`
+  fails if `.toggle` returns to the CSS.
+- Three mockup features have **no data behind them and were left out**: suggested
+  follow-ups ("Try next"), helpful/not-helpful feedback, and "Export as PDF instead"
+  on an unsupported file. Ingest also reports which *stage* a file is in, not how far
+  through it is, so the tray's progress bar is indeterminate rather than a percentage.
 
 ## Claude API usage
 

@@ -134,7 +134,7 @@ def test_storage_roundtrip_with_fake_embeddings(tmp_path, monkeypatch):
 
     # delete cascades to chunks, vectors, and the FTS index
     assert db.delete_document(doc_id) is True
-    assert db.stats() == {"documents": 0, "chunks": 0}
+    assert db.stats() == {"documents": 0, "chunks": 0, "pages": 0}
     assert db.keyword_search("terminate", limit=5) == []
 
     settings.cache_clear()

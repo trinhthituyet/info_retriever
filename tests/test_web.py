@@ -295,6 +295,41 @@ def test_search_returns_hybrid_hits(client):
     assert client.get("/api/search", params={"q": "  "}).status_code == 400
 
 
+def test_document_context_serves_one_page_for_the_sources_panel(client):
+    """The panel shows a quote in its page, using the stored text the citation was
+    located in — not a rendered PDF page, whose glyphs we could not guarantee line up
+    with the character offsets."""
+    _upload(client, "lease.txt", LEASE)
+    document_id = client.get("/api/documents").json()[0]["id"]
+
+    body = client.get(f"/api/documents/{document_id}/context", params={"page": 1}).json()
+    assert body["page"] == 1
+    assert body["title"] == "Lease — 12 Rose St"
+    assert "RENT" in body["text"]
+    assert body["headings"], "the panel labels the page with its clause heading"
+
+    # A page with nothing indexed on it is an empty result, not an error: the panel
+    # says so rather than showing a blank sheet.
+    empty = client.get(f"/api/documents/{document_id}/context", params={"page": 99}).json()
+    assert empty["text"] is None
+
+    assert client.get("/api/documents/nope/context").status_code == 404
+
+
+def test_stats_counts_pages_for_the_header(client):
+    """The topbar reports "N documents · N pages indexed", both from stats. A plain-text
+    ingest has no pages at all, so it contributes nothing rather than being counted as
+    one — the frontend drops the clause when the total is 0."""
+    before = client.get("/api/stats").json()
+    assert before["pages"] == 0
+
+    _upload(client, "lease.txt", LEASE)
+    after = client.get("/api/stats").json()
+    assert after["documents"] == 1
+    assert after["chunks"] >= 1
+    assert after["pages"] == 0, "text has no page count; the sum must not invent one"
+
+
 def test_there_is_no_cli(client):
     """The CLI was removed; the web app is the only entry point. Nothing may
     re-introduce an import of it, or of a CLI framework."""
@@ -332,7 +367,26 @@ def test_ask_streams_stage_tool_delta_then_answer(client):
     assert final["tool_calls"][0]["name"] == "read_document"
 
 
-def test_ask_without_cite_skips_the_citation_pass(client):
+def test_the_ui_always_requests_citations(client):
+    """The Verify & cite toggle is gone: the Sources panel is the reason to ask at all,
+    so making it optional only offered users a worse answer. `cite=false` survives as an
+    API parameter for scripted callers who want the cheaper single pass."""
+    app_js = client.get("/static/app.js").text
+    index_html = client.get("/")
+    css = client.get("/static/style.css").text
+
+    assert 'id="cite"' not in index_html.text, "the checkbox must be gone from the markup"
+    assert 'class="toggle"' not in index_html.text
+    assert '$("cite")' not in app_js, "nothing may read the removed control"
+    assert "cite: String(" not in app_js, "the flag must not be sent from the UI"
+    assert ".toggle" not in css, "its styling is dead once the control is gone"
+
+    # The API parameter itself is untouched.
+    assert client.get("/openapi.json").status_code == 200
+
+
+def test_ask_without_cite_is_still_supported_over_http(client):
+    """UI-less callers can still skip the citation pass; only the toggle was removed."""
     _upload(client, "lease.txt", LEASE)
     with client.stream("GET", "/api/ask", params={"q": "rent?", "cite": "false"}) as stream:
         events = _sse_events("".join(stream.iter_text()))
@@ -493,31 +547,51 @@ def test_the_transcript_renderer_reads_the_fields_the_api_sends(client):
     )
 
 
-def test_sources_collapse_but_unlocated_quotes_stay_visible(client):
-    """Sources render as a collapsed <details> so the transcript stays readable — the
-    native element supplies the arrow and keyboard handling. The exception is a quote
-    the backend could not locate: that usually means the model paraphrased instead of
-    quoting, so it must not be hidden behind a click."""
+def test_evidence_lives_in_the_panel_behind_a_chip(client):
+    """Sources and tool calls render in the right-hand panel, selected by a chip under
+    the answer, so the transcript stays readable.
+
+    The chip is a *button* with `aria-expanded`/`aria-controls`, not a `<details>`:
+    the content it reveals is in another region, and a disclosure element would promise
+    the content sits inside it.
+    """
     app_js = client.get("/static/app.js").text
+    index_html = client.get("/").text
     css = client.get("/static/style.css").text
 
-    assert 'el("details", "citations")' in app_js, "sources must be a disclosure element"
-    assert 'el("summary", null, label)' in app_js
-    assert "wrap.open = true" in app_js, "an unlocated quote must auto-open the block"
-    assert "not found in source" in app_js, "the summary should say why it opened"
+    # The panel is the surface, with a tab per kind of evidence.
+    assert 'id="tab-sources"' in index_html and 'id="tab-tools"' in index_html
+    assert 'role="tablist"' in index_html
+    assert "function showEvidence" in app_js
+    assert 'showEvidence(activeEvidence, "sources")' in app_js
+    assert 'showEvidence(activeEvidence, "tools")' in app_js
+    assert ".tab.active" in css, "the active tab must be distinguishable"
 
-    # No `open` by default, so the collapsed state is the norm.
-    assert "wrap.open = false" not in app_js
+    # The chip carries the ARIA that describes remote content.
+    assert 'el("button", "srcbtn")' in app_js
+    assert 'setAttribute("aria-controls", "panel")' in app_js
+    assert 'setAttribute("aria-expanded"' in app_js
+    assert 'el("details", "citations")' not in app_js, (
+        "a disclosure would claim the sources are inside it; they are in the panel"
+    )
+    # Keyboard users need a focus ring, since the chip is the control.
+    assert ".srcbtn:focus-visible" in css
 
-    # A chevron, hidden native marker, and rotation on open.
-    assert "details.citations > summary::before" in css
-    assert "::-webkit-details-marker" in css, "Safari needs the native triangle hidden"
-    assert "details.citations[open] > summary::before" in css
-    assert "rotate(90deg)" in css
-    # Keyboard users need a focus ring, since the summary is the control.
-    assert "summary:focus-visible" in css
+    # The panel is not a third column until it is opened.
+    assert '.shell.with-panel' in css
+    assert 'classList.add("with-panel")' in app_js
 
-    # The Inspect-retrieval diagnostic is a plain div and stays open.
+    # An unlocated quote must not be hidden behind a click. Two things guarantee that:
+    # the chip says so in the transcript, and the panel opens on it by itself.
+    assert "not found in source" in app_js
+    assert 'chip.classList.add("warn")' in app_js
+    assert ".srcbtn.warn" in css
+    assert 'citation.located === false)) {\n      showEvidence(evidence, "sources");' in app_js, (
+        "an answer carrying an unlocatable quote must open the panel on it"
+    )
+
+    # The Inspect-retrieval diagnostic reuses the source cards under a heading, in the
+    # transcript beside the query it ran.
     assert 'el("div", "citations")' in app_js
     assert ".citations h3" in css
 
