@@ -596,6 +596,44 @@ def test_evidence_lives_in_the_panel_behind_a_chip(client):
     assert ".citations h3" in css
 
 
+def test_each_rail_row_can_be_deleted_without_opening_it(client):
+    """The rail lists conversations with a delete on each row. Two things matter: the
+    row is a container with two sibling buttons (a button cannot nest another, and the
+    delete must be reachable without opening the conversation first), and deleting a
+    row that is *not* on screen must not throw away the transcript being read."""
+    app_js = client.get("/static/app.js").text
+    css = client.get("/static/style.css").text
+
+    assert 'el("button", "convo-delete")' in app_js
+    assert 'icon("trash"' in app_js, "the row delete is a trash can, not a × glyph"
+    assert 'el("button", "convo-open")' in app_js, "the row's open target is its own button"
+    assert 'el("div", "convo")' in app_js, "the row itself must not be a button"
+    # An icon-only button has no text, so the label is all a screen reader gets.
+    assert 'aria-label", `Delete' in app_js
+
+    # One delete path, shared with the thread-header button, so they cannot drift.
+    assert "async function deleteConversation(id, label)" in app_js
+    assert "if (id === conversationId) startNewConversation();" in app_js, (
+        "deleting another row must leave the open conversation alone"
+    )
+    assert "window.confirm" in app_js, "deletion is irreversible; confirm it"
+
+    # Hidden until hover, but reachable by keyboard.
+    assert ".convo:hover .convo-delete" in css
+    assert ".convo-delete:focus-visible" in css, "an opacity-0 control still takes focus"
+
+    # The route it calls removes only that conversation.
+    _upload(client, "lease.txt", LEASE)
+    keep = client.post("/api/conversations").json()["conversation_id"]
+    with client.stream("GET", "/api/ask", params={"q": "keep me", "conversation_id": keep}) as s:
+        s.read()
+    drop = client.post("/api/conversations").json()["conversation_id"]
+
+    assert client.delete(f"/api/conversations/{drop}").status_code == 200
+    assert [row["id"] for row in client.get("/api/conversations").json()] == [keep]
+    assert client.get(f"/api/conversations/{keep}").json()["turns"][0]["question"] == "keep me"
+
+
 def test_an_earlier_conversation_can_be_reopened_in_full(client):
     """A refresh starts fresh, but earlier conversations stay selectable from the
     picker. Reopening one must return its whole transcript in a single request, and a

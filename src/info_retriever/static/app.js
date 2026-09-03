@@ -38,6 +38,8 @@ const ICON_PATHS = {
   copy: ["M15 5.5A1.5 1.5 0 0 0 13.5 4h-8A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15"],
   search: ["M16 16l4 4"],
   working: ["M12 4.5a7.5 7.5 0 1 1-5.3 2.2", "M6.7 3v3.7h3.7"],
+  // Same glyph as the thread header's delete, so there is one trash can in the app.
+  trash: ["M5 7.5h14", "M9.5 7.5V5.5h5v2", "M7 7.5l.8 12h8.4l.8-12"],
 };
 /* Shapes that are not a path — kept separate so `icon()` stays one code path. */
 const ICON_EXTRAS = {
@@ -966,19 +968,38 @@ function renderAnswer(container, { text, citations, toolCalls, continuing, quest
 
 /* --- conversation list ----------------------------------------------------- */
 
-function conversationButton(conversation) {
-  const button = el("button", "convo");
-  button.type = "button";
-  if (conversation.id === conversationId) button.classList.add("active");
+/** One row in the rail: open on the left, delete on the right.
+ *
+ * A container with two sibling buttons rather than one button — a button cannot nest
+ * another, and the delete must be reachable without opening the conversation first.
+ */
+function conversationRow(conversation) {
+  const row = el("div", "convo");
+  if (conversation.id === conversationId) row.classList.add("active");
+
+  const title = conversation.title || "Untitled";
+  const open = el("button", "convo-open");
+  open.type = "button";
 
   const meta = el("div", "m");
   meta.append(el("span", null, plural(conversation.turn_count, "question")));
   const when = relativeTime(conversation.updated_at);
   if (when) meta.append(el("span", "dot"), el("span", null, when));
 
-  button.append(el("div", "t", conversation.title || "Untitled"), meta);
-  button.addEventListener("click", () => openConversation(conversation.id));
-  return button;
+  open.append(el("div", "t", title), meta);
+  open.addEventListener("click", () => openConversation(conversation.id));
+
+  const remove = el("button", "convo-delete");
+  remove.type = "button";
+  remove.title = "Delete this conversation";
+  // The icon carries no text, so the label is the only thing a screen reader gets —
+  // and there is one of these per row, so it names which conversation.
+  remove.setAttribute("aria-label", `Delete “${title}”`);
+  remove.append(icon("trash", 14, 1.9));
+  remove.addEventListener("click", () => deleteConversation(conversation.id, title));
+
+  row.append(open, remove);
+  return row;
 }
 
 async function loadConversationList() {
@@ -991,7 +1012,7 @@ async function loadConversationList() {
       // repeatedly does not accumulate empty conversations.
       list.append(el("div", "rail-empty", "No conversations yet."));
     }
-    conversations.forEach((conversation) => list.append(conversationButton(conversation)));
+    conversations.forEach((conversation) => list.append(conversationRow(conversation)));
     updateDeleteState();
     return conversations;
   } catch (err) {
@@ -1079,17 +1100,27 @@ const newConversation = () => {
 $("new-conversation").addEventListener("click", newConversation);
 $("thread-new").addEventListener("click", newConversation);
 
-$("delete-conversation").addEventListener("click", async () => {
-  if (!conversationId) return;
-  if (!window.confirm("Delete this conversation and its history?")) return;
+/** Delete one conversation, from the rail or from the thread header.
+ *
+ * Only resets the transcript when the deleted conversation is the one on screen —
+ * removing a different row from the rail must not throw away what the user is reading.
+ */
+async function deleteConversation(id, label) {
+  if (!id) return;
+  const what = label ? `“${label}”` : "this conversation";
+  if (!window.confirm(`Delete ${what} and its history?`)) return;
   try {
-    await api(`/api/conversations/${conversationId}`, { method: "DELETE" });
+    await api(`/api/conversations/${id}`, { method: "DELETE" });
   } catch (err) {
     window.alert(`Delete failed: ${err.message}`);
     return;
   }
-  startNewConversation();
+  if (id === conversationId) startNewConversation();
   await loadConversationList();
+}
+
+$("delete-conversation").addEventListener("click", () => {
+  deleteConversation(conversationId, $("thread-title").textContent);
 });
 
 /* --- asking ---------------------------------------------------------------- */

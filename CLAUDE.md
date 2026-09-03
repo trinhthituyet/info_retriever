@@ -273,7 +273,11 @@ Three columns (`.shell`), from `docs/redesign/mockup.html`:
 
 - **Left rail** — add/drop documents, a nav that swaps the rail between the
   conversation list and the indexed-document list, and an upload tray pinned to the
-  bottom with one live row per file.
+  bottom with one live row per file. Each conversation row carries a hover-revealed
+  `×`; `deleteConversation()` is shared with the thread-header button and **only resets
+  the transcript when the deleted id is the one on screen** — removing another row must
+  not throw away what the user is reading. The row is a container with two sibling
+  buttons, because a button cannot nest another.
 - **Centre** — thread header, transcript, composer. Enter sends, Shift+Enter breaks.
   Under each answer sits a chip row: `Sources N`, `Agent tool calls N`, copy.
 - **Right panel** — *where this answer came from*, for one turn at a time, with a
