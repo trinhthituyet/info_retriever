@@ -37,6 +37,23 @@ def _store_blob(loaded: LoadedFile) -> Path:
     return target
 
 
+def remove_document(document_id: str) -> bool:
+    """Drop a document from the index and delete its stored original.
+
+    The blob is personal paperwork, so "delete" has to mean the file too, not just
+    the rows that point at it. Only a path inside the blob store is ever unlinked —
+    `file_path` comes from the database, and a stray value must not reach elsewhere.
+    Returns False when there was no such document.
+    """
+    row = db.get_document(document_id)
+    if row is None or not db.delete_document(document_id):
+        return False
+    blob = Path(row["file_path"]).resolve()
+    if blob.parent == settings().blob_dir.resolve():
+        blob.unlink(missing_ok=True)
+    return True
+
+
 def ingest_file(path: Path, *, progress: Progress = _noop) -> IngestResult:
     db.init_db()
 

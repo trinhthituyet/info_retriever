@@ -267,7 +267,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 .navitem.active .count { color: var(--accent); }
 
-.rail-section { display: flex; flex-direction: column; min-height: 0; }
+.rail-section { display: flex; flex-direction: column; min-height: 0; flex: 1 1 0; }
 .rail-section[hidden] { display: none; }
 
 .section-head { display: flex; align-items: center; margin: 22px 0 8px; padding: 0 8px; }
@@ -333,7 +333,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 /* Top-right corner of the row. Revealed on hover to keep the list quiet, but always
    focusable — a keyboard user tabs to it and `:focus-visible` brings it back. */
-.convo-delete {
+.convo-delete,
+.doc-delete {
   position: absolute;
   top: 5px;
   right: 5px;
@@ -348,9 +349,13 @@ button { font: inherit; color: inherit; cursor: pointer; }
   transition: opacity .12s, color .12s, background .12s;
 }
 .convo:hover .convo-delete,
-.convo-delete:focus-visible { opacity: 1; }
-.convo-delete:hover { background: var(--danger-tint); color: var(--danger); }
-.convo-delete:focus-visible { outline: 2px solid var(--danger); outline-offset: 1px; }
+.convo-delete:focus-visible,
+.doc:hover .doc-delete,
+.doc-delete:focus-visible { opacity: 1; }
+.convo-delete:hover,
+.doc-delete:hover { background: var(--danger-tint); color: var(--danger); }
+.convo-delete:focus-visible,
+.doc-delete:focus-visible { outline: 2px solid var(--danger); outline-offset: 1px; }
 .dot { width: 3px; height: 3px; border-radius: 999px; background: var(--ink-3); opacity: .55; flex: none; }
 
 .rail-empty { padding: 6px 9px; font-size: 12.5px; color: var(--ink-3); }
@@ -359,7 +364,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .doc-list { list-style: none; margin: 0; padding: 0 0 4px; overflow-y: auto; min-height: 0; }
 .doc-list li + li { margin-top: 2px; }
-.doc-list button {
+.doc-list .doc { position: relative; }
+.doc-open {
   display: block;
   width: 100%;
   text-align: left;
@@ -368,8 +374,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
   border-radius: 10px;
   background: transparent;
 }
-.doc-list button:hover { background: var(--surface-2); border-color: var(--line); }
-.doc-list .row { display: flex; align-items: baseline; gap: 7px; }
+.doc:hover .doc-open { background: var(--surface-2); border-color: var(--line); }
+/* Clear of the delete button in the corner; reserved always so the title does not
+   re-ellipsise as the pointer arrives. */
+.doc-list .row { display: flex; align-items: baseline; gap: 7px; padding-right: 22px; }
 .doc-list .title {
   font-size: 13px;
   font-weight: 550;
@@ -394,6 +402,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 /* upload tray */
 
+/* Capped, with the file rows scrolling inside it. Unbounded, a large upload grows the
+   tray past the viewport: the page itself does not scroll, so the rail sections above
+   shrink to nothing and the rail looks frozen. */
 .tray {
   margin-top: auto;
   border: 1px solid var(--line);
@@ -401,10 +412,16 @@ button { font: inherit; color: inherit; cursor: pointer; }
   background: var(--surface);
   box-shadow: var(--shadow-md);
   overflow: hidden;
-  flex: none;
+  flex: 0 1 auto;
+  max-height: 40%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .tray[hidden] { display: none; }
+#ingest-log { overflow-y: auto; min-height: 0; }
 .tray-head {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -926,7 +943,12 @@ textarea#question:focus { outline: none; }
 textarea#question:disabled { opacity: .6; }
 textarea#question::placeholder { color: var(--ink-3); }
 
-.composer-foot { display: flex; align-items: center; gap: 8px; padding: 8px 10px 10px 12px; }
+.composer-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px 10px 12px; }
+/* Two send buttons no longer fit beside the keyboard hint on a phone; the hint goes
+   first, and the row wraps rather than scrolling sideways. */
+@media (max-width: 600px) {
+  .composer-foot .kbd, .composer-foot .kbd-label { display: none; }
+}
 .kbd {
   padding: 1px 5px;
   border: 1px solid var(--line);
@@ -953,6 +975,15 @@ textarea#question::placeholder { color: var(--ink-3); }
 }
 .send:hover:not(:disabled) { background: var(--accent-hover); }
 .send:disabled { opacity: .55; cursor: progress; }
+/* "Ask with tools": the same size and placement, outlined so the filled "Ask" stays
+   the default that Enter sends. */
+.send.send-alt {
+  background: var(--surface);
+  color: var(--accent-deep);
+  border: 1px solid var(--accent);
+  box-shadow: none;
+}
+.send.send-alt:hover:not(:disabled) { background: var(--accent-tint); }
 
 .disclaimer {
   display: flex;

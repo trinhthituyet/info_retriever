@@ -334,6 +334,27 @@ def test_agent_loop_tolerates_malformed_tool_arguments(vllm):
     ).text == "done"
 
 
+def test_answer_from_excerpts_numbers_the_excerpts_and_offers_no_tools(vllm):
+    provider = vllm.provider()
+    captured: list = []
+    _stub_complete(provider, [_completion("Sixty days [1].")], captured)
+
+    events: list[tuple[str, dict]] = []
+    text = provider.answer_from_excerpts(
+        question="notice period?",
+        excerpts=[{"document_title": "Lease", "page": 2, "content": "sixty (60) days written notice"}],
+        emit=lambda kind, p: events.append((kind, p)),
+    )
+
+    assert text == "Sixty days [1]."
+    request = captured[0]
+    assert "tools" not in request, "single pass: the model gets no tools"
+    prompt = request["messages"][-1]["content"]
+    assert '<excerpt n="1" document="Lease" page="2">' in prompt
+    assert "sixty (60) days written notice" in prompt
+    assert any(kind == "delta" for kind, _ in events), "the UI needs the answer text"
+
+
 def test_cite_locates_quotes_and_streams_the_answer(vllm):
     provider = vllm.provider()
     payload = {
@@ -354,6 +375,54 @@ def test_cite_locates_quotes_and_streams_the_answer(vllm):
     assert result.citations[0]["page"] == 2
     assert result.citations[0]["located"] is True
     assert any(kind == "delta" for kind, _ in events), "UI needs answer text to render"
+
+
+def test_every_answer_writing_prompt_carries_the_scope_rule():
+    """Answer what was asked and stop. The rule must reach each prompt that writes
+    text the user reads — the citation pass is that text on the tools path, and
+    run_ask's single pass on the other — and the lines that invited padding must not
+    come back in any of them."""
+    from info_retriever import agent
+    from info_retriever.llm import prompts
+
+    writers = {
+        "agent pass": agent.INSTRUCTIONS,
+        "citation pass": prompts.cite_user_prompt("q", "d", "2026-01-01"),
+        "run_ask": prompts.EXCERPT_ANSWER_SYSTEM,
+    }
+    for name, text in writers.items():
+        assert prompts.ANSWER_SCOPE_RULE in text, f"{name} lacks the scope rule"
+        for padding in ("say what they do cover", "then the supporting detail",
+                        "name the document and clause"):
+            assert padding not in text, f"{name} invites padding: {padding!r}"
+
+
+def test_the_cite_prompt_forbids_narrating_the_draft():
+    """The citation pass writes what the user reads, and the user never saw the draft.
+    Without this rule the model reports its own verification ("The draft is correct")."""
+    from info_retriever.llm import prompts
+
+    prompt = prompts.cite_user_prompt("q", "d", "2026-01-01")
+    assert "The user never sees the draft" in prompt
+    assert "Do not mention the draft" in prompt
+
+
+def test_cite_accepts_quotes_encoded_as_a_json_string(vllm):
+    """json_object mode constrains only the outer object; a model can return the
+    nested list as a string. That must still produce citations, not silently none."""
+    provider = vllm.provider()
+    quotes = [{"document_id": "doc-1", "text": "sixty (60) days written notice"}]
+    payload = {"answer": "Sixty days written notice.", "quotes": json.dumps(quotes)}
+    _stub_complete(provider, [_completion(json.dumps(payload))])
+
+    result = provider.cite(
+        question="notice period?",
+        draft="about two months",
+        documents=[{"id": "doc-1", "title": "Lease", "full_text": LEASE}],
+    )
+
+    assert result.citations[0]["located"] is True
+    assert result.citations[0]["page"] == 2
 
 
 def test_cite_falls_back_to_the_draft_when_json_is_unparseable(vllm):

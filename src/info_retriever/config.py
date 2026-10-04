@@ -41,10 +41,13 @@ class Settings:
     vllm_max_tokens: int
     vllm_temperature: float
     vllm_pdf_dpi: int
+    vllm_timeout: float
 
     history_max_turns: int
     history_max_chars: int
     query_rewrite: bool
+    agent_max_rounds: int
+    cite_max_documents: int
 
     embed_model: str
     embed_dim: int
@@ -151,10 +154,13 @@ def settings() -> Settings:
         vllm_max_tokens=int(os.getenv("VLLM_MAX_TOKENS", "4096")),
         vllm_temperature=float(os.getenv("VLLM_TEMPERATURE", "0.2")),
         vllm_pdf_dpi=int(os.getenv("VLLM_PDF_DPI", "150")),
+        vllm_timeout=float(os.getenv("VLLM_TIMEOUT", "180")),
         history_max_turns=int(os.getenv("HISTORY_MAX_TURNS", "12")),
         history_max_chars=int(os.getenv("HISTORY_MAX_CHARS", "12000")),
         query_rewrite=os.getenv("QUERY_REWRITE", "1").strip().lower()
         not in ("0", "false", "no", "off"),
+        agent_max_rounds=max(1, int(os.getenv("AGENT_MAX_ROUNDS", "3"))),
+        cite_max_documents=max(1, int(os.getenv("CITE_MAX_DOCUMENTS", "8"))),
         embed_model=os.getenv("EMBED_MODEL", "BAAI/bge-m3"),
         embed_dim=int(os.getenv("EMBED_DIM", "1024")),
         embed_query_prefix=os.getenv("EMBED_QUERY_PREFIX", ""),

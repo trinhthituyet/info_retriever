@@ -103,54 +103,83 @@ def client(tmp_path, monkeypatch):
         ),
     )
 
-    def fake_ask(question, *, conversation_id=None, cite=True, emit=None):
+    ask_calls: list[dict] = []
+
+    def fake_run_ask(question, *, conversation_id=None, limit=8, emit=None):
+        ask_calls.append({"question": question, "limit": limit})
         send = emit or (lambda *_: None)
-        # Mirrors the real agent.ask contract: an absent *or unknown* id starts a
+        # Mirrors the real agent.run_ask contract: an absent *or unknown* id starts a
         # fresh conversation, so a stale bookmarked id cannot wedge the UI.
         if conversation_id is None or db.get_conversation(conversation_id) is None:
             conversation_id = db.create_conversation()
             send("conversation", {"conversation_id": conversation_id, "created": True})
-        send("stage", {"stage": "searching", "detail": "catalogue"})
-        send("tool", {"name": "read_document", "input": {"document_id": "abc"}})
-        send("draft", {"text": "draft answer"})
-        if cite:
-            send("stage", {"stage": "citing", "detail": "1 document"})
-            for piece in ("Sixty ", "days ", "notice."):
-                send("delta", {"text": piece})
+        send("stage", {"stage": "searching", "detail": f"retrieving the top {limit} excerpts"})
+        for piece in ("Sixty ", "days ", "notice [1]."):
+            send("delta", {"text": piece})
 
-        citations = (
-            [
-                {
-                    "document_title": "Lease — 12 Rose St",
-                    "cited_text": "sixty (60) days written notice",
-                    "page": 1,
-                }
-            ]
-            if cite
-            else []
-        )
-        text = "Sixty days notice." if cite else "draft answer"
+        citations = [
+            {
+                "document_id": "abc",
+                "document_title": "Lease — 12 Rose St",
+                "cited_text": "sixty (60) days written notice",
+                "page": 1,
+                "heading": None,
+                "located": True,
+            }
+        ]
+        text = "Sixty days notice [1]."
         ordinal = db.append_turn(
             conversation_id,
             question=question,
             answer=text,
             citations=citations,
             documents_used=[{"id": "abc", "title": "Lease — 12 Rose St"}],
-            tool_calls=[{"name": "read_document", "input": {"document_id": "abc"}}],
+            tool_calls=[],
         )
         return agent.Answer(
             text=text,
             citations=citations,
             documents_used=[{"id": "abc", "title": "Lease — 12 Rose St"}],
-            tool_calls=[{"name": "read_document", "input": {"document_id": "abc"}}],
+            tool_calls=[],
             conversation_id=conversation_id,
             ordinal=ordinal,
         )
 
-    monkeypatch.setattr(agent, "ask", fake_ask)
+    monkeypatch.setattr(agent, "run_ask", fake_run_ask)
+
+    def fake_run_ask_with_tools(question, *, conversation_id=None, cite=True, emit=None):
+        """The "Ask with tools" path: a tool call, then a cited answer."""
+        ask_calls.append({"question": question, "tools": True})
+        send = emit or (lambda *_: None)
+        if conversation_id is None or db.get_conversation(conversation_id) is None:
+            conversation_id = db.create_conversation()
+            send("conversation", {"conversation_id": conversation_id, "created": True})
+        tool_calls = [{"name": "read_document", "input": {"document_id": "abc"}}]
+        send("stage", {"stage": "searching", "detail": "catalogue"})
+        send("tool", tool_calls[0])
+        send("draft", {"text": "draft answer"})
+        send("delta", {"text": "Sixty days notice."})
+        ordinal = db.append_turn(
+            conversation_id,
+            question=question,
+            answer="Sixty days notice.",
+            citations=[],
+            documents_used=[{"id": "abc", "title": "Lease — 12 Rose St"}],
+            tool_calls=tool_calls,
+        )
+        return agent.Answer(
+            text="Sixty days notice.",
+            documents_used=[{"id": "abc", "title": "Lease — 12 Rose St"}],
+            tool_calls=tool_calls,
+            conversation_id=conversation_id,
+            ordinal=ordinal,
+        )
+
+    monkeypatch.setattr(agent, "run_ask_with_tools", fake_run_ask_with_tools)
 
     db.init_db()
     with TestClient(web.create_app()) as test_client:
+        test_client.ask_calls = ask_calls  # what /api/ask passed to agent.run_ask
         yield test_client
 
     settings.cache_clear()
@@ -278,10 +307,67 @@ def test_document_detail_download_and_delete(client):
     assert original.status_code == 200
     assert "RESIDENTIAL LEASE" in original.text
 
+    from info_retriever import db
+
+    blob = Path(db.get_document(document_id)["file_path"])
+    assert blob.is_file()
+
     assert client.delete(f"/api/documents/{document_id}").json() == {"deleted": True}
     assert client.get("/api/documents").json() == []
     assert client.get(f"/api/documents/{document_id}").status_code == 404
     assert client.delete(f"/api/documents/{document_id}").status_code == 404
+    # Personal paperwork: deleting it from the index deletes the stored original too.
+    assert not blob.exists()
+
+    # And it can be added again afterwards — the sha256 dedup must not remember it.
+    _upload(client, "lease.txt", LEASE)
+    assert len(client.get("/api/documents").json()) == 1
+
+
+def test_document_delete_never_unlinks_outside_the_blob_store(client, tmp_path):
+    """`file_path` comes from the database; a value pointing elsewhere must not turn a
+    document delete into deleting an arbitrary file."""
+    from info_retriever import db, ingest
+
+    _upload(client, "lease.txt", LEASE)
+    document_id = client.get("/api/documents").json()[0]["id"]
+
+    outside = tmp_path / "not-a-blob.txt"
+    outside.write_text("keep me")
+    with db.backend().session() as conn:
+        db.backend().execute(
+            conn, "update documents set file_path = ? where id = ?", (str(outside), document_id)
+        )
+
+    assert ingest.remove_document(document_id) is True
+    assert outside.read_text() == "keep me"
+    assert ingest.remove_document(document_id) is False
+
+
+def test_a_large_upload_cannot_push_the_rail_off_screen(client):
+    """The page does not scroll, so an unbounded tray grows past the viewport, squeezes
+    the rail lists to nothing and leaves the rail looking frozen. The tray is capped
+    and its rows scroll inside it."""
+    css = client.get("/static/style.css").text
+    tray = re.search(r"\n\.tray \{([^}]*)\}", css).group(1)
+    assert "max-height" in tray
+    assert "flex: none" not in tray, "a tray that cannot shrink ignores its cap"
+    assert re.search(r"#ingest-log \{[^}]*overflow-y: auto", css)
+
+
+def test_each_document_row_can_be_deleted_without_opening_it(client):
+    app_js = client.get("/static/app.js").text
+    css = client.get("/static/style.css").text
+
+    assert 'el("button", "doc-delete")' in app_js
+    assert 'el("button", "doc-open")' in app_js, "the row's open target is its own button"
+    assert 'el("li", "doc")' in app_js, "the row itself must not be a button"
+    # One delete path, shared with the detail dialog, so they cannot drift.
+    assert "async function deleteDocument(id, title)" in app_js
+    assert "await deleteDocument(doc.id, doc.title)" in app_js
+
+    assert ".doc:hover .doc-delete" in css
+    assert ".doc-delete:focus-visible" in css, "an opacity-0 control still takes focus"
 
 
 def test_search_returns_hybrid_hits(client):
@@ -347,16 +433,17 @@ def test_there_is_no_cli(client):
         assert "from rich" not in body and "import rich" not in body, f"{source.name} imports rich"
 
 
-def test_ask_streams_stage_tool_delta_then_answer(client):
+def test_ask_streams_stage_delta_then_answer(client):
+    """/api/ask runs agent.run_ask: one search, one model call, no tools."""
     _upload(client, "lease.txt", LEASE)
 
-    with client.stream("GET", "/api/ask", params={"q": "notice period?", "cite": "true"}) as stream:
+    with client.stream("GET", "/api/ask", params={"q": "notice period?"}) as stream:
         assert stream.headers["content-type"].startswith("text/event-stream")
         events = _sse_events("".join(stream.iter_text()))
 
     kinds = [name for name, _ in events]
-    assert kinds.index("stage") < kinds.index("tool")
-    assert "delta" in kinds
+    assert kinds.index("stage") < kinds.index("delta")
+    assert "tool" not in kinds, "the single-pass path offers the model no tools"
     assert kinds[-1] == "answer"
 
     # Accumulated deltas must be a prefix-consistent build of the final text.
@@ -364,13 +451,53 @@ def test_ask_streams_stage_tool_delta_then_answer(client):
     final = events[-1][1]
     assert streamed == final["text"]
     assert final["citations"][0]["page"] == 1
-    assert final["tool_calls"][0]["name"] == "read_document"
+    assert final["citations"][0]["document_id"] == "abc", "so 'Open page N' works"
+    assert final["tool_calls"] == []
+
+
+def test_tools_true_answers_through_the_agent(client):
+    """The "Ask with tools" button: same route, the agentic path behind it."""
+    _upload(client, "lease.txt", LEASE)
+
+    with client.stream("GET", "/api/ask", params={"q": "notice period?", "tools": "true"}) as stream:
+        events = _sse_events("".join(stream.iter_text()))
+
+    assert client.ask_calls[-1].get("tools") is True, "run_ask_with_tools was called"
+    kinds = [name for name, _ in events]
+    assert "tool" in kinds and kinds[-1] == "answer"
+    assert events[-1][1]["tool_calls"][0]["name"] == "read_document"
+
+    with client.stream("GET", "/api/ask", params={"q": "notice period?"}) as stream:
+        stream.read()
+    assert "tools" not in client.ask_calls[-1], "without the flag it is run_ask"
+
+
+def test_the_composer_offers_ask_and_ask_with_tools(client):
+    index_html = client.get("/").text
+    app_js = client.get("/static/app.js").text
+
+    assert 'id="ask-button"' in index_html and 'id="ask-tools-button"' in index_html
+    assert index_html.count('type="submit"') == 2, "both buttons submit the one form"
+    # The clicked button decides the path; Enter has no submitter and takes "Ask".
+    assert 'event.submitter.id === "ask-tools-button"' in app_js
+    assert 'params.set("tools", "true")' in app_js
+    assert '$("ask-tools-button").disabled = busy;' in app_js, "both lock while answering"
+
+
+def test_ask_forwards_the_excerpt_limit_clamped(client):
+    _upload(client, "lease.txt", LEASE)
+    for sent, expected in (("5", 5), ("99", 20), ("0", 1)):
+        with client.stream("GET", "/api/ask", params={"q": "rent?", "limit": sent}) as stream:
+            stream.read()
+        assert client.ask_calls[-1]["limit"] == expected
+    with client.stream("GET", "/api/ask", params={"q": "rent?"}) as stream:
+        stream.read()
+    assert client.ask_calls[-1]["limit"] == 8, "eight excerpts by default"
 
 
 def test_the_ui_always_requests_citations(client):
     """The Verify & cite toggle is gone: the Sources panel is the reason to ask at all,
-    so making it optional only offered users a worse answer. `cite=false` survives as an
-    API parameter for scripted callers who want the cheaper single pass."""
+    so making it optional only offered users a worse answer."""
     app_js = client.get("/static/app.js").text
     index_html = client.get("/")
     css = client.get("/static/style.css").text
@@ -380,21 +507,6 @@ def test_the_ui_always_requests_citations(client):
     assert '$("cite")' not in app_js, "nothing may read the removed control"
     assert "cite: String(" not in app_js, "the flag must not be sent from the UI"
     assert ".toggle" not in css, "its styling is dead once the control is gone"
-
-    # The API parameter itself is untouched.
-    assert client.get("/openapi.json").status_code == 200
-
-
-def test_ask_without_cite_is_still_supported_over_http(client):
-    """UI-less callers can still skip the citation pass; only the toggle was removed."""
-    _upload(client, "lease.txt", LEASE)
-    with client.stream("GET", "/api/ask", params={"q": "rent?", "cite": "false"}) as stream:
-        events = _sse_events("".join(stream.iter_text()))
-
-    kinds = [name for name, _ in events]
-    assert "delta" not in kinds
-    assert [p for n, p in events if n == "draft"][0]["text"] == "draft answer"
-    assert kinds[-1] == "answer"
 
 
 # --------------------------------------------------------------------------- #
@@ -733,7 +845,7 @@ def test_ask_surfaces_backend_errors_as_an_sse_failure_event(client, monkeypatch
 
     _upload(client, "lease.txt", LEASE)
     monkeypatch.setattr(
-        agent, "ask", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("model exploded"))
+        agent, "run_ask", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("model exploded"))
     )
 
     with client.stream("GET", "/api/ask", params={"q": "boom"}) as stream:

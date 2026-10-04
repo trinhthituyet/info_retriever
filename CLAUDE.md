@@ -38,6 +38,14 @@ info-retriever --port 3000 --reload
 .venv/bin/python -m info_retriever.web        # same thing, no console script
 ```
 
+On Windows the venv interpreter is `.venv/Scripts/python.exe`, not `.venv/bin/python`;
+substitute it in every command above.
+
+`apple-certifi` (and the `pypi.apple.com` index) is only reachable on Apple's network.
+It is optional at runtime: `config._resolve_ca_bundle` returns `None` when the module is
+missing, which is fine for `LLM_PROVIDER=vllm` but breaks TLS to Floodgate unless
+`SSL_CERT_FILE` points at a bundle carrying Apple's internal roots.
+
 There is no linter or formatter configured. Tests need **no credential, no model
 download and no vLLM server** — the Anthropic client, the OpenAI client, appleconnect
 and the embedding model are all stubbed. Two tests in `test_vllm_http.py` bind a
@@ -56,8 +64,8 @@ Test files map to the seams, which is where to add a new case:
 | File | Covers | Stubs |
 |---|---|---|
 | `test_pipeline.py` | chunking, date normalisation, storage round-trip | fake vectors |
-| `test_web.py` | routes, SSE framing, upload jobs, conversation endpoints | `agent.ask` |
-| `test_conversation.py` | real `agent.ask`, history rendering, document fallback | a fake provider |
+| `test_web.py` | routes, SSE framing, upload jobs, conversation endpoints | `agent.run_ask` |
+| `test_conversation.py` | real `agent.run_ask_with_tools`, history rendering, document fallback | a fake provider |
 | `test_query_rewrite.py` | language detection, translation, multi-query retrieval | the same fake provider |
 | `test_markdown.py` | inline Markdown, paragraph spacing, injection sinks | nothing (static) |
 | `test_providers.py` | provider selection, vLLM adapters, quote locating | `_complete` |
@@ -70,7 +78,9 @@ Test files map to the seams, which is where to add a new case:
 ```
 add:  loaders → (extract.transcribe if no text layer) → extract.classify
               → extract.extract_fields → chunking → embed → db
-ask:  provider.run_agent (tools + cached catalogue + prior turns)
+ask:  provider.plan_query
+      → LangGraph loop:  provider.run_agent (tools + cached catalogue + prior turns)
+                         → provider.assess_draft → run_agent again | finish
       → provider.cite    (re-send documents, attach verbatim quotes)
       → db.append_turn   (the turn becomes history for the next question)
 ```
@@ -114,9 +124,9 @@ Consequences to respect:
 
 ### The provider seam is semantic, not transport
 
-`llm/base.py` defines exactly five operations — `transcribe`, `classify`,
-`extract_fields`, `run_agent`, `cite`. It is **not** an abstraction over "send a
-message", and must not become one. Below that line Anthropic and an
+`llm/base.py` defines eight operations — `transcribe`, `classify`, `extract_fields`,
+`plan_query`, `run_agent`, `assess_draft`, `answer_from_excerpts`, `cite`. It is
+**not** an abstraction over "send a message", and must not become one. Below that line Anthropic and an
 OpenAI-compatible server disagree about nearly everything (structured outputs, tool
 plumbing, how documents attach, whether citations exist), so a lower seam leaks one
 provider's shape into the other.
@@ -165,6 +175,64 @@ Page-level citations require the original PDF, which is why `_citable_block` re-
 the stored blob for PDFs and falls back to extracted text (character offsets) for
 DOCX/text. Images cannot be cited at all.
 
+### The research loop reads more only when the draft says it cannot answer
+
+`agent._research` is a LangGraph graph: `run_agent → check_result → (run_agent |
+END)`. `check_result` calls `provider.assess_draft` with the draft and the
+`(id, title)` of everything read. **The review is not a fact-check**: it asks only
+whether the draft itself says it lacks information — could not find, open or confirm
+something — and if so names one unread document per gap. A draft that answers is
+final. (An earlier version checked every claim against the documents read; it asked
+for 7 documents on a 5-person question, including two per fact and some for details
+the question never asked, which pushed the total past `CITE_MAX_DOCUMENTS`.) The
+agent is told to state such gaps in `agent.INSTRUCTIONS`; without that line it would
+answer from catalogue summaries silently, and the citation pass — which sees only
+opened documents — would drop those claims. Rules that are easy to break:
+
+- **Every round's reads reach `cite`.** Tool calls accumulate across rounds, and
+  `CITE_MAX_DOCUMENTS` (default 8, was a hard-coded 3) caps what is re-sent. A cap
+  below the number of documents a question needs silently drops claims again.
+- **The loop must terminate on its own.** It stops when the review says sufficient,
+  when the review names no unread document that exists, when a round reads nothing
+  new, or at `AGENT_MAX_ROUNDS` (default 3; `1` disables the review). Suggested ids
+  are filtered against the catalogue before they can buy another round.
+- **A later round is told the earlier draft, not given its tool results** — the same
+  outcomes-not-transcripts rule as conversation history. Documents read earlier still
+  reach `cite`, so the draft's claims from them stand.
+- **`check_result` degrades, never raises**, like `_plan`: a failed review keeps the
+  draft.
+- **`cite` is told what it was *not* given.** `unattached` carries the titles of every
+  indexed document not re-sent (never their text), and `cite_user_prompt` tells the
+  pass to call such a document "not checked". Without it the pass, which never sees
+  the catalogue, read "not attached" as "does not exist". Documents the agent read but
+  `CITE_MAX_DOCUMENTS` cut land in that list too, with a logged warning.
+
+### `/api/ask` serves `run_ask`, the single-pass path
+
+`agent.run_ask` answers in one pass: `hybrid_search` over the planned queries, the top
+`limit` chunks numbered into the prompt, `provider.answer_from_excerpts`, done — no
+tools, no review loop, no citation pass. The model marks claims `[n]`;
+`_excerpt_citations` renumbers them by first use, drops markers naming no excerpt, and
+uses the excerpt as `cited_text`, so every citation is `located: True` with a
+`document_id` and page. It sees fragments, never a whole document — the failure mode
+inversion 1 above exists to avoid — which is what makes it useful as a comparison.
+It records the turn exactly as `run_ask_with_tools` does.
+
+**The UI offers both paths, as two buttons on one route.** "Ask" (the filled default,
+and what Enter sends) calls `GET /api/ask` → `run_ask`; "Ask with tools" adds
+`tools=true` → `run_ask_with_tools`, which the two inversions above describe and the
+evaluation (`evaluation/eval.py`) exercises. Consequences:
+
+- Both buttons submit the one form; `event.submitter` picks the path. Enter and the
+  example chips submit with no submitter, so they always take "Ask".
+- `/api/ask` takes `limit` (excerpts for `run_ask`, clamped 1-20) and `tools`; it no
+  longer takes `cite` — the tools path always runs the citation pass.
+- A `run_ask` answer streams `stage`, `delta`, `answer` with no `tool` events, so its
+  "Agent tool calls" chip reads 0. Its renumbered `[n]` markers line up with the
+  numbered source cards (`citationsBlock` numbers them `index + 1`).
+- The first progress step says "Thinking — with tools" for the tools path, so two
+  answers to one question can be told apart.
+
 ### Query normalisation assumes English documents
 
 `agent._plan` calls `provider.plan_query(question)` before searching, producing a
@@ -191,12 +259,17 @@ Rules that are easy to break:
   `system=`** — so `agent.INSTRUCTIONS` never reaches it. A rule placed only there
   governs the draft and has no effect on the output. `prompts.language_rule()` is the
   single definition, injected into both the agent turn prompt and `cite_user_prompt`;
-  `agent.ask` passes `plan.language` to `cite`.
+  `agent.run_ask_with_tools` passes `plan.language` to `cite`.
+- **"Answer what was asked, nothing more" follows the same rule.**
+  `prompts.ANSWER_SCOPE_RULE` is the single definition, appended to
+  `agent.INSTRUCTIONS`, `CITE_INSTRUCTION` (so it rides in `cite_user_prompt`) and
+  `EXCERPT_ANSWER_SYSTEM`. Lines like "say what they do cover" or "then the supporting
+  detail" invited padding the judge marked down; a test keeps them out of all three.
 - **The answer is translated in full; the cited excerpts are not.** Prose, headings and
   quoted clauses go into the user's language. `cited_text` and the vLLM `quotes` stay
   verbatim — they are located in the source text, and a translated quote cannot match.
-- **Only `planning`'s `stage` detail is rendered in the UI** (`STAGES_WITH_DETAIL` in
-  `app.js`); for other stages the detail restates the label.
+- **Only `planning`'s and `reviewing`'s `stage` detail is rendered in the UI**
+  (`STAGES_WITH_DETAIL` in `app.js`); for other stages the detail restates the label.
 - `QUERY_REWRITE=0` disables the call and searches verbatim.
 
 ## Invariants that will bite you
@@ -278,7 +351,8 @@ Three columns (`.shell`), from `docs/redesign/mockup.html`:
   the transcript when the deleted id is the one on screen** — removing another row must
   not throw away what the user is reading. The row is a container with two sibling
   buttons, because a button cannot nest another.
-- **Centre** — thread header, transcript, composer. Enter sends, Shift+Enter breaks.
+- **Centre** — thread header, transcript, composer with "Ask" and "Ask with tools".
+  Enter sends (as "Ask"), Shift+Enter breaks.
   Under each answer sits a chip row: `Sources N`, `Agent tool calls N`, copy.
 - **Right panel** — *where this answer came from*, for one turn at a time, with a
   segmented control over two tabs: the source cards, and the agent's tool calls.
@@ -310,8 +384,8 @@ Consequences to respect:
   it ran, and it is a diagnostic, not an answer's provenance.
 - **`agent._annotate_citations` adds `document_id` and `heading`.** A provider reports
   a citation against a document *title* — that is all the citation pass was given, and
-  a title cannot be opened. Resolving it in `agent.ask`, where the re-sent documents
-  are already in hand, keeps both providers free of it. An unlocatable quote gets
+  a title cannot be opened. Resolving it in `agent.run_ask_with_tools`, where the
+  re-sent documents are already in hand, keeps both providers free of it. An unlocatable quote gets
   neither field, so no "Open page N" is offered for a quote that was never found.
 - **`.amount` is applied by us, not by the model.** `FIGURE` in `app.js` tints a bold
   run only when it is *purely* a figure, so `**30 days**` and `**payment cycle**` stay

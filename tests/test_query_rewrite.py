@@ -101,7 +101,7 @@ def test_the_planner_runs_for_every_question(env):
     agent, db, provider = env
     _seed(db)
 
-    agent.ask("what is my deposit?")
+    agent.run_ask_with_tools("what is my deposit?")
 
     assert len(provider.plan_calls) == 1
     assert provider.plan_calls[0]["question"] == "what is my deposit?"
@@ -122,7 +122,7 @@ def test_a_non_english_question_is_translated_and_the_reply_language_is_pinned(e
         search_queries=["security deposit amount", "deposit refund conditions"],
     )
 
-    agent.ask(VIETNAMESE)
+    agent.run_ask_with_tools(VIETNAMESE)
 
     prompt = provider.agent_calls[0]["question"]
     assert "How much is my deposit?" in prompt, "the English rendering must reach the model"
@@ -135,7 +135,7 @@ def test_an_english_question_is_not_relabelled_or_translated(env):
     agent, db, provider = env
     _seed(db, language="en")
 
-    agent.ask("what is my deposit?")
+    agent.run_ask_with_tools("what is my deposit?")
 
     prompt = provider.agent_calls[0]["question"]
     assert "Answer in" not in prompt, "no language instruction is needed for English"
@@ -243,7 +243,7 @@ def agent_turn_prompt(env, language: str) -> str:
     provider.plan_result = QueryPlan(
         language=language, is_english=language == "en", english="q", search_queries=["deposit"]
     )
-    agent.ask("câu hỏi")
+    agent.run_ask_with_tools("câu hỏi")
     return provider.agent_calls[-1]["question"]
 
 
@@ -254,7 +254,7 @@ def test_the_detected_language_is_passed_to_cite(env):
         language="vi", is_english=False, english="deposit?", search_queries=["deposit"]
     )
 
-    agent.ask(VIETNAMESE)
+    agent.run_ask_with_tools(VIETNAMESE)
     assert provider.cite_calls[0]["language"] == "vi"
 
 
@@ -262,7 +262,7 @@ def test_english_questions_pass_english_to_cite(env):
     agent, db, provider = env
     _seed(db)
 
-    agent.ask("what is my deposit?")
+    agent.run_ask_with_tools("what is my deposit?")
     assert provider.cite_calls[0]["language"] == "en"
 
 
@@ -305,7 +305,7 @@ def test_the_planning_stage_reports_the_translation_and_terms(env):
     )
 
     events: list[tuple[str, dict]] = []
-    agent.ask(VIETNAMESE, emit=lambda k, p: events.append((k, p)))
+    agent.run_ask_with_tools(VIETNAMESE, emit=lambda k, p: events.append((k, p)))
 
     planning = [p for k, p in events if k == "stage" and p.get("stage") == "planning"]
     assert planning, "the planning step must be reported"
@@ -319,7 +319,7 @@ def test_an_english_question_does_not_claim_to_be_translated(env):
     _seed(db, language="en")
 
     events: list[tuple[str, dict]] = []
-    agent.ask("what is my deposit?", emit=lambda k, p: events.append((k, p)))
+    agent.run_ask_with_tools("what is my deposit?", emit=lambda k, p: events.append((k, p)))
 
     planning = [p for k, p in events if k == "stage" and p.get("stage") == "planning"]
     assert planning
@@ -340,7 +340,7 @@ def test_the_original_question_is_always_kept_as_a_search_query(env):
         language="en", is_english=True, english="q", search_queries=["generic contract terms"]
     )
 
-    agent.ask("policy AB-99871 deductible")
+    agent.run_ask_with_tools("policy AB-99871 deductible")
 
     prompt = provider.agent_calls[0]["question"]
     assert "policy AB-99871 deductible" in prompt
@@ -354,7 +354,7 @@ def test_the_transcript_stores_the_question_as_typed(env):
         language="vi", is_english=False, english="How much is my deposit?", search_queries=["deposit"]
     )
 
-    answer = agent.ask(VIETNAMESE)
+    answer = agent.run_ask_with_tools(VIETNAMESE)
     stored = db.conversation_turns(answer.conversation_id)[0]
     assert stored["question"] == VIETNAMESE
 
@@ -371,7 +371,7 @@ def test_a_planner_failure_does_not_cost_the_user_their_answer(env):
     provider.plan_error = RuntimeError("planner exploded")
 
     events: list[tuple[str, dict]] = []
-    answer = agent.ask("what is my deposit?", emit=lambda k, p: events.append((k, p)))
+    answer = agent.run_ask_with_tools("what is my deposit?", emit=lambda k, p: events.append((k, p)))
 
     assert answer.text, "the answer must still be produced"
     assert provider.agent_calls, "the agent must still run"
@@ -388,7 +388,7 @@ def test_query_rewrite_can_be_switched_off(env, monkeypatch):
 
     settings.cache_clear()
 
-    agent.ask("what is my deposit?")
+    agent.run_ask_with_tools("what is my deposit?")
     assert provider.plan_calls == [], "no planner call when disabled"
     assert "what is my deposit?" in provider.agent_calls[0]["question"]
 
@@ -479,7 +479,7 @@ def test_the_citation_fallback_uses_the_rewritten_queries(env):
 
     agent.hybrid_search = spy  # type: ignore[assignment]
     try:
-        answer = agent.ask("how much do I hand over each month")
+        answer = agent.run_ask_with_tools("how much do I hand over each month")
     finally:
         agent.hybrid_search = original  # type: ignore[assignment]
 

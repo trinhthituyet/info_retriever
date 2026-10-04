@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import shutil
 import threading
 import uuid
@@ -206,7 +208,30 @@ def _run_ingest(job: IngestJob) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _configure_logging() -> None:
+    """Send the package's own log lines (retrieval, tool calls) to the console.
+
+    Uvicorn configures only its own loggers, so without this an ``info`` from
+    ``info_retriever.*`` goes nowhere. ``LOG_LEVEL`` picks the threshold (default
+    INFO); ``WARNING`` silences the per-question retrieval log.
+
+    ``info_retriever.content`` carries the full text every tool returned to the
+    model — whole documents, up to 60 KB per ``read_document``. That is personal
+    paperwork in the console; ``LOG_CONTENT=0`` turns it off and keeps the summaries.
+    """
+    logger = logging.getLogger("info_retriever")
+    logger.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
+    if os.getenv("LOG_CONTENT", "1").strip().lower() in ("0", "false", "no", "off"):
+        logging.getLogger("info_retriever.content").setLevel(logging.WARNING)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s  %(message)s"))
+        logger.addHandler(handler)
+        logger.propagate = False
+
+
 def create_app() -> FastAPI:
+    _configure_logging()
     app = FastAPI(title="info-retriever", docs_url="/api/docs", redoc_url=None)
     db.init_db()
 
@@ -314,7 +339,9 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/documents/{document_id}")
     def delete_document(document_id: str) -> dict[str, bool]:
-        if not db.delete_document(document_id):
+        from .ingest import remove_document
+
+        if not remove_document(document_id):
             raise HTTPException(status_code=404, detail="No such document")
         return {"deleted": True}
 
@@ -384,25 +411,46 @@ def create_app() -> FastAPI:
         return {"deleted": True}
 
     @app.get("/api/ask", include_in_schema=False)
-    def ask(q: str, cite: bool = True, conversation_id: str | None = None) -> StreamingResponse:
+    def ask(
+        q: str, conversation_id: str | None = None, limit: int = 8, tools: bool = False
+    ) -> StreamingResponse:
+        """Answer a question, by one of two paths — the UI's two buttons.
+
+        Default ("Ask"): ``agent.run_ask`` — hybrid search, excerpts in the prompt, one
+        model call; the stream is ``stage``, ``delta``, ``answer``. ``limit`` is how
+        many excerpts the model sees (1-20).
+
+        ``tools=true`` ("Ask with tools"): ``agent.run_ask_with_tools`` — the agent
+        reads whole documents with tools, the review loop runs, then the citation
+        pass; the stream adds ``tool`` and ``draft`` events. ``limit`` is unused.
+        """
         question = q.strip()
         if not question:
             raise HTTPException(status_code=400, detail="Empty question")
         if db.stats()["documents"] == 0:
             raise HTTPException(status_code=409, detail="No documents indexed yet")
 
-        from .agent import ask as run_ask
+        # Imported here, not at module level, so tests can stub either function.
+        from . import agent
 
         queue: Queue = Queue()
 
+        def emit(kind: str, payload: dict[str, Any]) -> None:
+            queue.put((kind, payload))
+
         def work() -> None:
             try:
-                answer = run_ask(
-                    question,
-                    conversation_id=conversation_id,
-                    cite=cite,
-                    emit=lambda kind, payload: queue.put((kind, payload)),
-                )
+                if tools:
+                    answer = agent.run_ask_with_tools(
+                        question, conversation_id=conversation_id, emit=emit
+                    )
+                else:
+                    answer = agent.run_ask(
+                        question,
+                        conversation_id=conversation_id,
+                        limit=max(1, min(limit, 20)),
+                        emit=emit,
+                    )
                 queue.put(
                     (
                         "answer",
@@ -449,7 +497,6 @@ app = create_app()
 def main(argv: list[str] | None = None) -> None:
     """Entry point for the ``info-retriever`` console script."""
     import argparse
-    import os
 
     import uvicorn
 

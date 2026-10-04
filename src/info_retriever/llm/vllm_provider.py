@@ -23,7 +23,13 @@ from typing import Any, Mapping, Sequence
 
 from ..config import settings
 from ..loaders import LoadedFile, as_image_parts
-from ..schemas import BaseContract, Classification, QueryPlan, extraction_model_for
+from ..schemas import (
+    BaseContract,
+    Classification,
+    DraftAssessment,
+    QueryPlan,
+    extraction_model_for,
+)
 from . import citations as citation_tools
 from . import prompts
 from .base import (
@@ -67,6 +73,10 @@ class VLLMProvider(LLMProvider):
                     # vLLM ignores the key unless started with --api-key, but the
                     # SDK refuses to construct without one.
                     api_key=cfg.vllm_api_key or "not-needed",
+                    # The SDK default is 600 s with two retries: an unresponsive
+                    # server stalls one call for up to half an hour before failing.
+                    timeout=cfg.vllm_timeout,
+                    max_retries=1,
                 )
             return self._client
 
@@ -92,6 +102,20 @@ class VLLMProvider(LLMProvider):
         except Exception as exc:  # noqa: BLE001 - normalise into our error type
             import openai
 
+            # Before APIConnectionError, which it subclasses: "could not reach" is
+            # the wrong diagnosis for a server that accepted the request and stalled.
+            if isinstance(exc, openai.APITimeoutError):
+                # The SDK reports a refused-to-open connection and a stalled answer
+                # with the same error; the transport exception underneath tells them apart.
+                if "Connect" in type(exc.__cause__).__name__:
+                    raise ProviderError(
+                        f"Could not reach the vLLM server at {cfg.vllm_base_url} "
+                        "(connection timed out). Check it is running and reachable."
+                    ) from exc
+                raise ProviderError(
+                    f"The vLLM server at {cfg.vllm_base_url} did not answer within "
+                    f"{cfg.vllm_timeout:.0f} s. Raise VLLM_TIMEOUT if long answers need more."
+                ) from exc
             if isinstance(exc, openai.APIConnectionError):
                 raise ProviderError(
                     f"Could not reach the vLLM server at {cfg.vllm_base_url}. "
@@ -204,6 +228,23 @@ class VLLMProvider(LLMProvider):
             prompt=prompts.query_plan_user_prompt(question),
             output_format=QueryPlan,
             schema_name="query_plan",
+        )
+
+    def assess_draft(
+        self,
+        *,
+        question: str,
+        draft: str,
+        documents_read: Sequence[tuple[str, str]],
+        catalogue: str,
+    ) -> DraftAssessment:
+        return self._json_schema_call(
+            system=prompts.ASSESS_DRAFT_SYSTEM,
+            prompt=prompts.assess_draft_user_prompt(
+                question, draft, list(documents_read), catalogue
+            ),
+            output_format=DraftAssessment,
+            schema_name="draft_assessment",
         )
 
     # ------------------------------------------------------------------ agent --
@@ -334,6 +375,41 @@ class VLLMProvider(LLMProvider):
 
     # ---------------------------------------------------------------- citation --
 
+    def answer_from_excerpts(
+        self,
+        *,
+        question: str,
+        excerpts: Sequence[Mapping[str, Any]],
+        history: Sequence[Turn] = (),
+        language: str = "en",
+        emit: Emit = no_emit,
+    ) -> str:
+        from .. import db
+
+        cfg = settings()
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": prompts.EXCERPT_ANSWER_SYSTEM}
+        ]
+        messages.extend(
+            {"role": role, "content": content}
+            for role, content in render_history(
+                history,
+                max_turns=cfg.history_max_turns,
+                max_chars=cfg.history_max_chars,
+            )
+        )
+        messages.append(
+            {
+                "role": "user",
+                "content": prompts.excerpt_answer_user_prompt(
+                    question, [dict(e) for e in excerpts], db.today(), language
+                ),
+            }
+        )
+        text = self._text_of(self._complete(messages=messages))
+        emit("delta", {"text": text})
+        return text
+
     def cite(
         self,
         *,
@@ -342,6 +418,7 @@ class VLLMProvider(LLMProvider):
         documents: Sequence[Mapping[str, Any]],
         history: Sequence[Turn] = (),
         language: str = "en",
+        unattached: Sequence[str] = (),
         emit: Emit = no_emit,
     ) -> CitedResult:
         from .. import db
@@ -365,7 +442,8 @@ class VLLMProvider(LLMProvider):
             for d in usable
         )
         prompt = (
-            f"{prompts.cite_user_prompt(question, draft, db.today(), language)}\n\n{attached}"
+            prompts.cite_user_prompt(question, draft, db.today(), language, unattached)
+            + f"\n\n{attached}"
         )
 
         messages: list[dict[str, Any]] = [
@@ -399,6 +477,14 @@ class VLLMProvider(LLMProvider):
         emit("delta", {"text": answer})
 
         quotes = payload.get("quotes")
+        # `json_object` mode constrains only the outer object, and some models encode
+        # the nested list as a JSON string (`"quotes": "[{...}]"`). Rejecting that shape
+        # silently cost every answer its citations.
+        if isinstance(quotes, str):
+            try:
+                quotes = json.loads(quotes)
+            except json.JSONDecodeError:
+                quotes = None
         if not isinstance(quotes, list):
             return CitedResult(text=answer)
 

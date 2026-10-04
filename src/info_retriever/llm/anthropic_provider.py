@@ -15,7 +15,13 @@ import anthropic
 from .. import auth, loaders
 from ..config import settings
 from ..loaders import LoadedFile
-from ..schemas import BaseContract, Classification, QueryPlan, extraction_model_for
+from ..schemas import (
+    BaseContract,
+    Classification,
+    DraftAssessment,
+    QueryPlan,
+    extraction_model_for,
+)
 from . import prompts
 from .base import (
     AgentResult,
@@ -167,6 +173,23 @@ class AnthropicProvider(LLMProvider):
             effort="low",
         )
 
+    def assess_draft(
+        self,
+        *,
+        question: str,
+        draft: str,
+        documents_read: Sequence[tuple[str, str]],
+        catalogue: str,
+    ) -> DraftAssessment:
+        # A bookkeeping judgement — which claims rest on unread documents — not
+        # reasoning about the contracts themselves, so low effort is enough.
+        return self._parse(
+            prompts.ASSESS_DRAFT_SYSTEM,
+            prompts.assess_draft_user_prompt(question, draft, list(documents_read), catalogue),
+            DraftAssessment,
+            effort="low",
+        )
+
     # ------------------------------------------------------------------ agent --
 
     def run_agent(
@@ -256,6 +279,46 @@ class AnthropicProvider(LLMProvider):
             "citations": {"enabled": True},
         }
 
+    def answer_from_excerpts(
+        self,
+        *,
+        question: str,
+        excerpts: Sequence[Mapping[str, Any]],
+        history: Sequence[Turn] = (),
+        language: str = "en",
+        emit: Emit = no_emit,
+    ) -> str:
+        from .. import db
+
+        cfg = settings()
+        messages: list[dict[str, Any]] = [
+            {"role": role, "content": content}
+            for role, content in render_history(
+                history,
+                max_turns=cfg.history_max_turns,
+                max_chars=cfg.history_max_chars,
+            )
+        ]
+        messages.append(
+            {
+                "role": "user",
+                "content": prompts.excerpt_answer_user_prompt(
+                    question, [dict(e) for e in excerpts], db.today(), language
+                ),
+            }
+        )
+        with self.client().messages.stream(
+            model=cfg.agent_model,
+            max_tokens=16000,
+            output_config={"effort": cfg.agent_effort},
+            system=prompts.EXCERPT_ANSWER_SYSTEM,
+            messages=messages,
+        ) as stream:
+            for delta in stream.text_stream:
+                emit("delta", {"text": delta})
+            response = self._check(stream.get_final_message())
+        return "".join(b.text for b in response.content if b.type == "text").strip()
+
     def cite(
         self,
         *,
@@ -264,6 +327,7 @@ class AnthropicProvider(LLMProvider):
         documents: Sequence[Mapping[str, Any]],
         history: Sequence[Turn] = (),
         language: str = "en",
+        unattached: Sequence[str] = (),
         emit: Emit = no_emit,
     ) -> CitedResult:
         from .. import db
@@ -298,7 +362,9 @@ class AnthropicProvider(LLMProvider):
                     *blocks,
                     {
                         "type": "text",
-                        "text": prompts.cite_user_prompt(question, draft, db.today(), language),
+                        "text": prompts.cite_user_prompt(
+                            question, draft, db.today(), language, unattached
+                        ),
                     },
                 ],
             }

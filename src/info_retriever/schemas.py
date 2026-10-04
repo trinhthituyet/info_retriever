@@ -60,6 +60,34 @@ class QueryPlan(_Strict):
     )
 
 
+class DraftAssessment(_Strict):
+    """Whether a draft says it lacks the information to answer.
+
+    Not a fact-check: the review reads the draft's own account of what it could not
+    find or confirm, and only that triggers another round of reading. A draft that
+    answers is sufficient, whatever it rests on.
+    """
+
+    sufficient: bool = Field(
+        description=(
+            "False only if the draft itself says it could not answer the question or "
+            "part of it; otherwise true."
+        )
+    )
+    missing: list[str] = Field(
+        description=(
+            "Each gap the draft names, one short item each, e.g. 'could not confirm "
+            "Rachel's citizenship'. Empty when sufficient."
+        )
+    )
+    documents_to_read: list[str] = Field(
+        description=(
+            "Ids, copied exactly from the catalogue, of the single unread document most "
+            "likely to fill each gap. Never an id that was already read."
+        )
+    )
+
+
 class Party(_Strict):
     name: str = Field(description="Legal name of the person or organisation.")
     role: str = Field(description="Their role, e.g. 'landlord', 'tenant', 'employer', 'insurer', 'policyholder'.")

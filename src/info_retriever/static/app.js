@@ -208,20 +208,52 @@ async function loadStats() {
 
 const DATE_DASH = "–";
 
+/** One document in the rail: open the detail on the left, delete on the right.
+ *
+ * Two sibling buttons, as in `conversationRow` — a button cannot nest another, and
+ * removing a document should not require opening it first.
+ */
 function documentRow(doc) {
-  const button = el("button");
-  button.type = "button";
+  const open = el("button", "doc-open");
+  open.type = "button";
 
   const row = el("div", "row");
   row.append(el("span", "title", doc.title), el("span", "tag", doc.doc_type || "?"));
 
   const span = `${doc.effective_date || "?"} ${DATE_DASH} ${doc.end_date || "?"}`;
-  button.append(row, el("div", "dates", span));
-  button.addEventListener("click", () => openDetail(doc.id));
+  open.append(row, el("div", "dates", span));
+  open.addEventListener("click", () => openDetail(doc.id));
 
-  const item = el("li");
-  item.append(button);
+  const remove = el("button", "doc-delete");
+  remove.type = "button";
+  remove.title = "Delete this document";
+  remove.setAttribute("aria-label", `Delete “${doc.title}”`);
+  remove.append(icon("trash", 14, 1.9));
+  remove.addEventListener("click", () => deleteDocument(doc.id, doc.title));
+
+  const item = el("li", "doc");
+  item.append(open, remove);
   return item;
+}
+
+/** Delete one document, from its rail row or from the detail dialog.
+ *
+ * Returns whether it was deleted, so the dialog knows to close. Conversations that
+ * cited the document keep their history; only the index and the stored original go.
+ */
+async function deleteDocument(id, title) {
+  const what = title ? `“${title}”` : "this document";
+  if (!window.confirm(`Delete ${what} from the index? The stored original is deleted too.`)) {
+    return false;
+  }
+  try {
+    await api(`/api/documents/${id}`, { method: "DELETE" });
+  } catch (err) {
+    window.alert(`Delete failed: ${err.message}`);
+    return false;
+  }
+  await Promise.all([loadDocuments(), loadStats()]);
+  return true;
 }
 
 async function loadDocuments() {
@@ -335,14 +367,7 @@ function openDetail(documentId) {
 }
 
 async function removeDocument(doc, dialog) {
-  if (!window.confirm(`Remove “${doc.title}” from the index?`)) return;
-  try {
-    await api(`/api/documents/${doc.id}`, { method: "DELETE" });
-    dialog.close();
-    await Promise.all([loadDocuments(), loadStats()]);
-  } catch (err) {
-    window.alert(`Delete failed: ${err.message}`);
-  }
+  if (await deleteDocument(doc.id, doc.title)) dialog.close();
 }
 
 $("detail-close").addEventListener("click", () => $("detail").close());
@@ -706,14 +731,16 @@ $("tab-tools").addEventListener("click", () => showEvidence(activeEvidence, "too
 const STAGE_LABELS = {
   planning: "Reading the question",
   searching: "Searching your documents",
+  reviewing: "Reading more to complete the answer",
   citing: "Verifying against the originals",
 };
 
 /* Stages whose `detail` carries the information, not just colour. For `planning` the
    detail is the whole point — it says which language the question was translated from
    and what terms are actually being searched. The other stages' details restate their
-   label, so appending them would only add noise. */
-const STAGES_WITH_DETAIL = new Set(["planning"]);
+   label, so appending them would only add noise. `reviewing` is the exception: its
+   detail says what was missing and how many more documents are being read. */
+const STAGES_WITH_DETAIL = new Set(["planning", "reviewing"]);
 
 const transcript = $("transcript");
 const thread = $("thread");
@@ -727,6 +754,7 @@ let lastDocuments = [];
 
 function setBusy(busy) {
   $("ask-button").disabled = busy;
+  $("ask-tools-button").disabled = busy;
   $("question").disabled = busy;
   $("inspect-button").disabled = busy;
 }
@@ -1125,7 +1153,10 @@ $("delete-conversation").addEventListener("click", () => {
 
 /* --- asking ---------------------------------------------------------------- */
 
-function askQuestion(question) {
+/** Ask one question. `withTools` picks the path: false is "Ask" (`run_ask`, one pass
+ *  over retrieved excerpts), true is "Ask with tools" (`run_ask_with_tools`, the agent
+ *  reads whole documents, then the citation pass). */
+function askQuestion(question, { withTools = false } = {}) {
   if (currentSource) currentSource.close();
 
   addQuestion(question);
@@ -1157,15 +1188,16 @@ function askQuestion(question) {
   };
 
   let streamed = false;
-  // Citations are always requested. The API still accepts cite=false for scripted
-  // callers who want the cheaper single pass; the UI does not expose it, because the
-  // Sources panel is the whole point of asking.
+  // Both paths return citations; they differ in what the model reads first.
   const params = new URLSearchParams({ q: question });
   if (conversationId) params.set("conversation_id", conversationId);
+  if (withTools) params.set("tools", "true");
 
   const source = new EventSource(`/api/ask?${params}`);
   currentSource = source;
-  addStep("Thinking");
+  // Says which button produced this answer, so two answers to one question can be
+  // told apart when comparing the paths.
+  addStep(withTools ? "Thinking — with tools" : "Thinking");
 
   const finish = () => {
     finishSteps();
@@ -1273,13 +1305,16 @@ function askQuestion(question) {
   source.onerror = () => fail("The connection to the backend dropped.");
 }
 
+/* Two submit buttons share the form; `submitter` says which was clicked. Enter and the
+   example chips submit with no submitter, so they take the default "Ask". */
 $("ask-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const question = $("question").value.trim();
   if (!question) return;
+  const withTools = Boolean(event.submitter && event.submitter.id === "ask-tools-button");
   $("question").value = "";
   $("question").style.height = "";
-  askQuestion(question);
+  askQuestion(question, { withTools });
 });
 
 /* Raw hybrid retrieval, no model in the loop. This is the first diagnostic when

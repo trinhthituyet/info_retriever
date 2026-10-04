@@ -1,7 +1,7 @@
-"""Provider-agnostic interface for the five model operations this app needs.
+"""Provider-agnostic interface for the model operations this app needs.
 
 The seam is deliberately at the *semantic* level — transcribe, classify, extract,
-run the agent, cite — not at "send a chat message". Anthropic and an
+plan a query, run the agent, assess its draft, answer from excerpts, cite — not at "send a chat message". Anthropic and an
 OpenAI-compatible vLLM server disagree about almost everything below that line
 (structured outputs, tool-call plumbing, how documents are attached, whether
 citations exist at all), so a lower seam would leak one provider's shape into the
@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 from ..loaders import LoadedFile
-from ..schemas import BaseContract, Classification, QueryPlan
+from ..schemas import BaseContract, Classification, DraftAssessment, QueryPlan
 
 #: ``emit(kind, payload)`` — progress channel. Kinds: ``stage``, ``tool``,
 #: ``delta`` (streamed answer text), ``draft``.
@@ -142,6 +142,39 @@ class LLMProvider(ABC):
         """
 
     @abstractmethod
+    def assess_draft(
+        self,
+        *,
+        question: str,
+        draft: str,
+        documents_read: Sequence[tuple[str, str]],
+        catalogue: str,
+    ) -> DraftAssessment:
+        """Is the draft backed by documents actually read, or is more reading needed?
+
+        ``documents_read`` is ``(id, title)`` for every document opened so far this
+        turn. The citation pass sees only those, so anything the draft took from the
+        catalogue's summaries will be dropped unless another round reads it.
+        """
+
+    @abstractmethod
+    def answer_from_excerpts(
+        self,
+        *,
+        question: str,
+        excerpts: Sequence[Mapping[str, Any]],
+        history: Sequence[Turn] = (),
+        language: str = "en",
+        emit: Emit = no_emit,
+    ) -> str:
+        """Answer in one pass from retrieved excerpts, with no tools.
+
+        ``excerpts`` are ``hybrid_search`` hits, numbered from 1 in the prompt; the
+        answer marks each claim with the number it rests on (``[2]``), which
+        ``agent.run_ask`` turns into citations. Used by the non-agentic path only.
+        """
+
+    @abstractmethod
     def cite(
         self,
         *,
@@ -150,12 +183,17 @@ class LLMProvider(ABC):
         documents: Sequence[Mapping[str, Any]],
         history: Sequence[Turn] = (),
         language: str = "en",
+        unattached: Sequence[str] = (),
         emit: Emit = no_emit,
     ) -> CitedResult:
         """Re-answer from the source documents, attaching verbatim citations.
 
         ``history`` matters here too: an elliptical follow-up ("and the deposit?")
         is uninterpretable without it.
+
+        ``unattached`` is the titles of indexed documents *not* attached here, so an
+        answer can say a document was not checked instead of claiming it does not
+        exist — the pass never sees the catalogue otherwise.
 
         ``language`` is the ISO 639-1 code the answer must be written in. This pass
         produces the text the user reads, so the rule has to arrive here — a language
