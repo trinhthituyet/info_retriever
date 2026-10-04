@@ -5,9 +5,16 @@ retrieval and ``agent.run_ask_with_tools`` for answers — against the documents
 ``DATA_DIR``. Ingest the test corpus through the web UI first.
 
     python -m info_retriever.evaluation.eval <test_row_number> [--no-tools]
+    python -m info_retriever.evaluation.eval --testcases FROM-TO [--res_path CSV] [--no-tools]
 
 Answers come from ``agent.run_ask_with_tools`` ("Ask with tools") by default, or from
 ``agent.run_ask`` ("Ask") with ``--no-tools``.
+
+``--testcases`` answer-evaluates a range of rows (inclusive, 0-based). ``--res_path``
+writes them into a results CSV in the dashboard's format: an existing file has the
+rows for those tests replaced in place, which is how a few failed tests are re-run
+into a full run's file. Both are optional; without them a row number prints the
+single-test report as before.
 
 The judge is any OpenAI-compatible endpoint. By default it is the configured vLLM
 server and model; set ``EVAL_JUDGE_BASE_URL`` / ``EVAL_JUDGE_MODEL`` /
@@ -28,6 +35,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from .. import agent, db
 from ..config import settings
 from ..retrieval import hybrid_search
+from .report import (  # noqa: F401 - format_citations is re-exported for callers
+    describe_answer,
+    describe_answer_eval,
+    describe_failure,
+    describe_test,
+    format_citations,
+    summarize_file,
+    upsert_rows,
+)
 from .test import TestQuestion, load_tests
 
 
@@ -176,34 +192,16 @@ def answer_question(question: str, *, with_tools: bool = True) -> agent.Answer:
     return answer
 
 
-def format_citations(citations: list[dict]) -> str:
-    """One numbered line per citation: document, page and heading, then the quote.
-
-    A quote the citation pass could not find in the source text is flagged rather
-    than hidden, the same as the UI's amber "not found in source" chip.
-    """
-    if not citations:
-        return "  (no citations)"
-    lines = []
-    for number, citation in enumerate(citations, start=1):
-        where = citation.get("document_title") or "unknown document"
-        if citation.get("page") is not None:
-            where += f", p. {citation['page']}"
-        if citation.get("heading"):
-            where += f" — {citation['heading']}"
-        if not citation.get("located", True):
-            where += "  [NOT FOUND IN SOURCE]"
-        quote = " ".join(str(citation.get("cited_text") or "").split())
-        lines.append(f"  [{number}] {where}\n      “{quote}”")
-    return "\n".join(lines)
-
-
 @lru_cache(maxsize=1)
 def _judge() -> tuple[OpenAI, str]:
     s = settings()
-    base_url = os.getenv("EVAL_JUDGE_BASE_URL", s.vllm_base_url)
-    model = os.getenv("EVAL_JUDGE_MODEL", s.vllm_model)
-    api_key = os.getenv("EVAL_JUDGE_API_KEY", s.vllm_api_key)
+    # `or`, not a getenv default: a line like `EVAL_JUDGE_API_KEY=` in .env yields "",
+    # which getenv returns as-is — and the SDK rejects an empty key as "Missing
+    # credentials". An empty setting means "use the vLLM one", as if it were absent.
+    base_url = os.getenv("EVAL_JUDGE_BASE_URL", "").strip() or s.vllm_base_url
+    model = os.getenv("EVAL_JUDGE_MODEL", "").strip() or s.vllm_model
+    # vLLM ignores the key unless started with --api-key; the SDK just needs one.
+    api_key = os.getenv("EVAL_JUDGE_API_KEY", "").strip() or s.vllm_api_key or "not-needed"
     if not model:
         raise RuntimeError("Set EVAL_JUDGE_MODEL (or VLLM_MODEL) to choose the judge model.")
     # Same bound as the app's own vLLM calls, so a stalled judge fails one test fast
@@ -357,25 +355,150 @@ def run_cli_evaluation(test_number: int, *, with_tools: bool = True):
     print(f"\n{'=' * 80}\n")
 
 
-def main():
-    """Evaluate a specific test by row number; ``--no-tools`` answers with run_ask."""
-    args = [arg for arg in sys.argv[1:] if arg != "--no-tools"]
-    with_tools = "--no-tools" not in sys.argv[1:]
-    if len(args) != 1:
-        print("Usage: python -m info_retriever.evaluation.eval <test_row_number> [--no-tools]")
+def parse_testcases(text: str) -> range:
+    """``"5"``, ``"5-12"``, ``"5..12"``, ``"5...12"`` or ``"5:12"`` → rows 5 to 12, inclusive.
+
+    Row numbers are 0-based, the same as the positional ``test_row_number``.
+    """
+    import argparse
+    import re
+
+    parts = [part for part in re.split(r"\s*(?:\.{2,3}|-|:)\s*", text.strip()) if part]
+    try:
+        bounds = [int(part) for part in parts]
+    except ValueError:
+        bounds = []
+    if len(bounds) == 1:
+        bounds *= 2
+    if len(bounds) != 2 or bounds[0] < 0 or bounds[1] < bounds[0]:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not a range; use FROM-TO (inclusive, 0-based), e.g. 85-99"
+        )
+    return range(bounds[0], bounds[1] + 1)
+
+
+def run_testcases(rows: range, *, with_tools: bool = True, res_path=None) -> None:
+    """Answer-evaluate test rows ``rows``; with ``res_path``, write each into that CSV.
+
+    The CSV is the dashboard's format (``testcase,result,evaluation``). When the file
+    exists, a test's row is replaced in place — matched on its question — and a test
+    not yet in it is appended; otherwise the file is created. Each test is written as
+    it finishes, so an interrupted run keeps what it completed. A test that raises is
+    recorded as an ``ERROR`` row and the run carries on, as on the dashboard.
+    """
+    tests = load_tests()
+    if rows.stop > len(tests):
+        print(f"Error: test rows run from 0 to {len(tests) - 1}; got {rows.start}-{rows.stop - 1}")
         sys.exit(1)
 
-    try:
-        test_number = int(args[0])
-    except ValueError:
-        print("Error: test_row_number must be an integer")
-        sys.exit(1)
+    path = "run_ask_with_tools" if with_tools else "run_ask"
+    target = f", writing to {res_path}" if res_path else ""
+    print(f"Answer evaluation of tests {rows.start}-{rows.stop - 1} via {path}{target}")
+    if res_path and res_path.exists():
+        print(f"  {res_path} exists: rows for these tests will be replaced in place")
+
+    scores: list[AnswerEval] = []
+    failed: list[int] = []
+    for done, number in enumerate(rows, start=1):
+        test = tests[number]
+        print(f"\n[{done}/{len(rows)}] #{number}: {test.question}")
+        try:
+            result, _, answer = evaluate_answer(test, with_tools=with_tools)
+        except Exception as exc:  # noqa: BLE001 - record it and keep going
+            failed.append(number)
+            row = {"testcase": describe_test(test), "result": "", "evaluation": describe_failure(exc)}
+            print(f"  {row['evaluation']}")
+        else:
+            scores.append(result)
+            row = {
+                "testcase": describe_test(test),
+                "result": describe_answer(answer),
+                "evaluation": describe_answer_eval(result),
+            }
+            print(f"  Answer: {answer.text}")
+            print(
+                f"  Accuracy {result.accuracy:.2f}/5 · Completeness {result.completeness:.2f}/5"
+                f" · Relevance {result.relevance:.2f}/5"
+            )
+        if res_path:
+            replaced, _ = upsert_rows(res_path, [row])
+            print(f"  {'replaced' if replaced else 'added'} row in {res_path.name}")
+
+    print(f"\n{'=' * 80}")
+    print(f"This run: {len(scores)} evaluated, {len(failed)} failed{f': {failed}' if failed else ''}")
+    if scores:
+        for field in ("accuracy", "completeness", "relevance"):
+            average = sum(getattr(s, field) for s in scores) / len(scores)
+            print(f"  average {field}: {average:.2f}/5")
+
+    if res_path and res_path.exists():
+        # The whole file, not just this run: after re-running a few failed tests, this
+        # is the summary of the complete evaluation.
+        summary = summarize_file(res_path, "answers")
+        numbers = {t.question: i for i, t in enumerate(tests)}
+        print(f"\nWhole file {res_path.name}: {summary.rows} rows, {len(summary.scored)} scored, "
+              f"{len(summary.errors)} ERROR")
+        for field in ("accuracy", "completeness", "relevance"):
+            print(f"  average {field}: {summary.average(field):.2f}/5")
+        if summary.errors:
+            still = sorted(numbers.get(q, -1) for q in summary.errors)
+            print(f"  still ERROR: tests {still}")
+
+
+def main():
+    """Evaluate one test row (as before), or a range written into a results CSV."""
+    import argparse
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(
+        prog="python -m info_retriever.evaluation.eval",
+        description=(
+            "Evaluate test cases from tests.jsonl. With a row number alone, prints the "
+            "retrieval and answer evaluation of that test, as before."
+        ),
+    )
+    parser.add_argument(
+        "test_row_number", nargs="?", type=int, help="one test to evaluate (0-based)"
+    )
+    parser.add_argument(
+        "--no-tools", action="store_true", help="answer with run_ask instead of run_ask_with_tools"
+    )
+    parser.add_argument(
+        "--testcases",
+        type=parse_testcases,
+        metavar="FROM-TO",
+        help="answer-evaluate a range of tests, inclusive and 0-based, e.g. 85-99",
+    )
+    parser.add_argument(
+        "--res_path",
+        type=Path,
+        metavar="CSV_FILE",
+        help=(
+            "results CSV to write; if it exists, the rows for these tests are replaced "
+            "in it directly (others are kept), otherwise it is created"
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.testcases is not None and args.test_row_number is not None:
+        parser.error("give either a test_row_number or --testcases, not both")
+    if args.testcases is None and args.test_row_number is None:
+        parser.error("give a test_row_number or --testcases FROM-TO")
 
     # Windows consoles default to cp1252; answers can carry characters it lacks.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
-    run_cli_evaluation(test_number, with_tools=with_tools)
+    with_tools = not args.no_tools
+    if args.testcases is None and args.res_path is None:
+        # Neither new option: exactly the old single-test report.
+        run_cli_evaluation(args.test_row_number, with_tools=with_tools)
+        return
+
+    rows = args.testcases
+    if rows is None:
+        rows = range(args.test_row_number, args.test_row_number + 1)
+    run_testcases(rows, with_tools=with_tools, res_path=args.res_path)
 
 
 if __name__ == "__main__":

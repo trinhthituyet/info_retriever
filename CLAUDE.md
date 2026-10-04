@@ -201,11 +201,14 @@ opened documents — would drop those claims. Rules that are easy to break:
   reach `cite`, so the draft's claims from them stand.
 - **`check_result` degrades, never raises**, like `_plan`: a failed review keeps the
   draft.
-- **`cite` is told what it was *not* given.** `unattached` carries the titles of every
-  indexed document not re-sent (never their text), and `cite_user_prompt` tells the
-  pass to call such a document "not checked". Without it the pass, which never sees
-  the catalogue, read "not attached" as "does not exist". Documents the agent read but
-  `CITE_MAX_DOCUMENTS` cut land in that list too, with a logged warning.
+- **`cite` is told what it was *not* given — and told not to mention it.**
+  `unattached` carries the titles of every indexed document not re-sent (never their
+  text). Its only job is to stop false absence: without it the pass, which never sees
+  the catalogue, read "not attached" as "does not exist" ("no records for any other
+  persons"). An earlier wording told it to say such documents were "not checked",
+  which put process padding into every answer; the note now forbids mentioning them,
+  and `ANSWER_SCOPE_RULE` forbids describing how an answer was produced. Documents the
+  agent read but `CITE_MAX_DOCUMENTS` cut land in that list too, with a logged warning.
 
 ### `/api/ask` serves `run_ask`, the single-pass path
 

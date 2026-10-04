@@ -659,6 +659,21 @@ def test_the_review_only_asks_for_more_when_the_draft_names_a_gap():
     assert "say so plainly in your answer" in instructions, "the agent must name its gaps"
 
 
+def test_the_agent_is_told_to_read_everything_in_one_round():
+    """Each round is a full agent pass plus a review. Planning the whole document set
+    from the catalogue and reading it at once is what keeps most questions to one."""
+    from info_retriever import agent
+    from info_retriever.llm import prompts
+
+    instructions = " ".join(agent.INSTRUCTIONS.split())
+    assert "plan from it the complete set of documents" in instructions
+    assert "in the same turn, as parallel tool calls" in instructions
+    assert "Catalogue summaries tell you what to read; they are not sources" in instructions
+
+    follow_up = " ".join(prompts.follow_up_round_prompt("turn", "draft", ["gap"], ["id"]).split())
+    assert "Make this the last round" in follow_up
+
+
 def test_the_citation_pass_is_told_which_documents_it_was_not_given(conversation_env):
     """It never sees the catalogue, so without this it reads "not attached" as "does
     not exist" — "no records for any other persons" about papers that were indexed."""
@@ -674,15 +689,28 @@ def test_the_citation_pass_is_told_which_documents_it_was_not_given(conversation
     assert call["unattached"] == ["Passport — Vignesh"]
 
 
-def test_the_unattached_note_says_not_checked_and_appears_only_when_needed():
+def test_the_unattached_note_prevents_false_absence_without_being_mentioned():
+    """The list exists so the answer never says "no record exists" about papers it was
+    not given — not so the answer can tell the user what went unchecked. Saying "the
+    Malaysian passport was not checked" is padding the user did not ask for."""
     from info_retriever.llm import prompts
 
-    with_note = " ".join(prompts.cite_user_prompt("q", "d", "2026-01-01", "en", ["Passport — Vignesh"]).split())
-    assert "- Passport — Vignesh" in prompts.cite_user_prompt("q", "d", "2026-01-01", "en", ["Passport — Vignesh"])
-    assert "say that document was not checked" in with_note
-    assert "Never say the documents contain no such record" in with_note
+    raw = prompts.cite_user_prompt("q", "d", "2026-01-01", "en", ["Passport — Vignesh"])
+    with_note = " ".join(raw.split())
+    assert "- Passport — Vignesh" in raw
+    assert "Do not mention these documents or that they were not checked" in with_note
+    assert "never claim something is absent from the user's documents" in with_note
+    assert "say that document was not checked" not in with_note, "the old wording invited it"
 
     assert "not attached" not in prompts.cite_user_prompt("q", "d", "2026-01-01")
+
+
+def test_the_scope_rule_forbids_describing_the_process():
+    from info_retriever.llm import prompts
+
+    rule = " ".join(prompts.ANSWER_SCOPE_RULE.split())
+    assert "Do not describe how the answer was produced" in rule
+    assert "not checked" in rule, "unchecked documents are named as something not to describe"
 
 
 def test_documents_beyond_the_citation_cap_are_logged_not_dropped_silently(

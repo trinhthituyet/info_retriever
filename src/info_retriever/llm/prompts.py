@@ -58,6 +58,10 @@ Answer exactly what was asked, and nothing more:
   period that applies only after the first year.
 - Name the source document only when the question spans several documents or the
   source is needed to tell answers apart; the interface shows sources separately.
+- Do not describe how the answer was produced: which documents were read, attached,
+  given or not checked, or what you looked at. The interface shows the sources.
+  Only an assumption that changes the answer — such as which five people "the five"
+  means — may be stated, in a few words.
 - If the question asks for several things, answer each, in the order asked, and stop.
 - If the documents do not answer the question, say so in one sentence. If it is
   ambiguous or the documents conflict, say so briefly — that is part of the answer."""
@@ -177,8 +181,10 @@ def follow_up_round_prompt(
         ]
     lines += [
         "",
-        "Read what is needed, then write the complete answer to the question. Keep the "
-        "parts of the draft that came from documents already read.",
+        "Make this the last round: request every document you still need in the same "
+        "turn, as parallel tool calls — the ones listed and anything else the gaps "
+        "require — then write the complete answer to the question. Keep the parts of "
+        "the draft that came from documents already read.",
     ]
     return "\n".join(lines)
 
@@ -245,10 +251,13 @@ def unattached_documents_note(titles: Sequence[str]) -> str:
     """
     listed = "\n".join(f"- {title}" for title in titles)
     return (
-        "Other indexed documents exist that are not attached here, so you have not "
-        f"seen their contents:\n{listed}\n"
-        "If the answer could depend on one of them, say that document was not checked. "
-        "Never say the documents contain no such record, or that it does not exist."
+        "For your awareness only — other indexed documents exist that are not attached "
+        f"here, so you have not seen their contents:\n{listed}\n"
+        "Do not mention these documents or that they were not checked. Their only "
+        "consequence: never claim something is absent from the user's documents, or "
+        "that no record of it exists. If part of the question cannot be answered from "
+        "what is attached, leave that part out, or say in a few words that it could "
+        "not be answered if leaving it out would mislead."
     )
 
 
